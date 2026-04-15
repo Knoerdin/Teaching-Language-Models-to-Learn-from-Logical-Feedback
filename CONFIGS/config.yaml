@@ -1,11 +1,7 @@
 defaults:
-  - MODELS@model: GRPO
+  - MODELS@model: qwen2.5
+  - TRAINERS@trainer: GRPO
   - _self_
-
-trainer:
-  output_dir: outputs
-  seed: 42
-  device: mps
 
 dataset:
   train_path: /Users/nordin/git_clones/Teaching-Language-Models-to-Learn-from-Logical-Feedback/DATA/FOLIO/folio_train.jsonl

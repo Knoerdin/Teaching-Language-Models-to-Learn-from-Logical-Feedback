@@ -1,0 +1,4 @@
+name: logical_feedback
+valid_labels: [true, false, uncertain]
+prompt_style: entailment
+reward_type: exact_label_match

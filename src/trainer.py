@@ -8,9 +8,9 @@ from typing import Any
 import hydra
 import torch
 from datasets import Dataset, load_dataset
-from omegaconf import DictConfig
+from hydra.utils import instantiate
+from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer, set_seed
-from trl import GRPOConfig, GRPOTrainer
 
 
 VALID_LABELS = {"true", "false", "uncertain"}
@@ -94,16 +94,12 @@ def _resolve_runtime_device(cfg: DictConfig) -> str:
     if requested == "mps":
         if torch.backends.mps.is_available():
             return "mps"
-        raise RuntimeError(
-            "trainer.device is set to 'mps', but MPS is not available in this environment."
-        )
+        raise RuntimeError("MPS requested but not available.")
 
     if requested == "cuda":
         if torch.cuda.is_available():
             return "cuda"
-        raise RuntimeError(
-            "trainer.device is set to 'cuda', but CUDA is not available in this environment."
-        )
+        raise RuntimeError("CUDA requested but not available.")
 
     if requested == "cpu":
         return "cpu"
@@ -115,11 +111,11 @@ def _resolve_runtime_device(cfg: DictConfig) -> str:
     return "cpu"
 
 
-def train_grpo(cfg: DictConfig) -> None:
+@hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
+def main(cfg: DictConfig) -> None:
     set_seed(int(cfg.trainer.seed))
     runtime_device = _resolve_runtime_device(cfg)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-    print(f"Using runtime device: {runtime_device}")
 
     train_dataset = _prepare_dataset(str(cfg.dataset.train_path))
     eval_dataset = _prepare_dataset(str(cfg.dataset.validation_path))
@@ -129,48 +125,28 @@ def train_grpo(cfg: DictConfig) -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    train_args = GRPOConfig(
+    trainer_args = instantiate(
+        cfg.trainer.args,
         output_dir=str(cfg.trainer.output_dir),
-        learning_rate=float(cfg.model.training.learning_rate),
-        per_device_train_batch_size=int(cfg.model.training.batch_size),
-        generation_batch_size=int(cfg.model.training.batch_size),
-        num_generations=int(cfg.model.training.num_generations),
-        logging_steps=int(cfg.model.training.logging_steps),
-        max_steps=int(cfg.model.training.max_steps),
-        report_to="none",
         run_name=str(cfg.experiment.name),
-        use_cpu=runtime_device == "cpu",
-        dataloader_pin_memory=runtime_device == "cuda",
+        use_cpu=(runtime_device == "cpu"),
+        dataloader_pin_memory=(runtime_device == "cuda"),
     )
 
-    trainer = GRPOTrainer(
+    trainer = instantiate(
+        cfg.trainer.trainer_cls,
         model=str(cfg.model.model_name_or_path),
         reward_funcs=logical_feedback_reward,
-        args=train_args,
+        args=trainer_args,
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
     )
+
+    print(f"Starting training {OmegaConf.to_yaml(cfg)} on device: {runtime_device}")
+
     trainer.train()
     trainer.save_model(str(cfg.trainer.output_dir))
-
-
-MODEL_TRAINERS = {
-    "grpo": train_grpo,
-}
-
-
-@hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
-def main(cfg: DictConfig) -> None:
-    model_name = str(cfg.model.name).lower()
-
-    if model_name not in MODEL_TRAINERS:
-        available = ", ".join(sorted(MODEL_TRAINERS.keys()))
-        raise ValueError(
-            f"Unknown model '{cfg.model.name}'. Available model trainers: {available}."
-        )
-
-    MODEL_TRAINERS[model_name](cfg)
 
 
 if __name__ == "__main__":

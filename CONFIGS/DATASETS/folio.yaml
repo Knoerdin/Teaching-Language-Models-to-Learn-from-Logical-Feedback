@@ -1,0 +1,3 @@
+train_path: ${oc.env:PROJECT_ROOT}/DATA/FOLIO/folio_train.jsonl
+validation_path: ${oc.env:PROJECT_ROOT}/DATA/FOLIO/folio_validation.jsonl
+test_path: ${oc.env:PROJECT_ROOT}/DATA/FOLIO/folio_test.jsonl
