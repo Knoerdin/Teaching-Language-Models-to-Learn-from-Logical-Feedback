@@ -10,9 +10,6 @@ htmlcov
 .zed
 
 .venv
-uv.lock
-.python-version
-pyproject.toml
 **/__pycache__/
 *.egg-info
 *.egg

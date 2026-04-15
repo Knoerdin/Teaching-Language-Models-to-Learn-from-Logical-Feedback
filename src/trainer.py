@@ -108,9 +108,6 @@ def _resolve_runtime_device(cfg: DictConfig) -> str:
     if requested == "cpu":
         return "cpu"
 
-    if requested != "auto":
-        raise ValueError("trainer.device must be one of: auto, mps, cuda, cpu")
-
     if torch.cuda.is_available():
         return "cuda"
     if torch.backends.mps.is_available():
