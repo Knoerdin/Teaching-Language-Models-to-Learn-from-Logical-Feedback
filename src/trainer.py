@@ -1,5 +1,13 @@
 from __future__ import annotations
 
+from REWARDS.formatting import completion_to_text, format_reward
+from REWARDS.formatting import (
+    completion_to_text,
+    extract_formalization,
+    format_reward,
+)
+from REWARDS.proving import correctness_reward
+
 import os
 import re
 from pathlib import Path
@@ -29,12 +37,17 @@ def _extract_predicted_label(text: str) -> str | None:
 
 def _build_prompt(example: dict[str, Any]) -> str:
     return (
-        "You are solving a logical entailment task.\n"
-        "Given premises and a conclusion, classify whether the conclusion follows from the premises.\n"
-        "Reply with exactly one label: True, False, or Uncertain.\n\n"
-        f"Premises:\n{example['premises']}\n\n"
-        f"Conclusion:\n{example['conclusion']}\n\n"
-        "Answer:"
+        "You are an autoformalization model.\n"
+        "Translate the natural-language reasoning problem into first-order logic.\n"
+        "Return exactly this format:\n\n"
+        "Premises:\n"
+        "<one formal premise per line>\n\n"
+        "Conclusion:\n"
+        "<one formal conclusion>\n\n"
+        "Do not answer True, False, or Uncertain.\n\n"
+        f"Natural-language premises:\n{example['premises']}\n\n"
+        f"Natural-language conclusion:\n{example['conclusion']}\n\n"
+        "Formalization:\n"
     )
 
 
@@ -49,11 +62,15 @@ def _prepare_dataset(path: str) -> Dataset:
         label = _normalize_label(str(row["label"]))
         if label not in VALID_LABELS:
             raise ValueError(
-                f"Unsupported label '{row['label']}'. Expected one of: {sorted(VALID_LABELS)}"
+                f"Unsupported label '{row['label']}'. "
+                f"Expected one of: {sorted(VALID_LABELS)}"
             )
+
         return {
             "prompt": _build_prompt(row),
             "solution": label,
+            "premises": str(row["premises"]),
+            "conclusion": str(row["conclusion"]),
             "example_id": str(row.get("example_id", "")),
         }
 
@@ -64,27 +81,34 @@ def logical_feedback_reward(
     prompts: list[str],
     completions: list[Any],
     solution: list[str],
+    premises: list[str],
+    conclusion: list[str],
     **_: Any,
 ) -> list[float]:
-    rewards: list[float] = []
-    for _, completion_item, gold in zip(prompts, completions, solution, strict=True):
-        if isinstance(completion_item, str):
-            completion_text = completion_item
-        elif isinstance(completion_item, list) and completion_item:
-            first_item = completion_item[0]
-            if isinstance(first_item, dict):
-                completion_text = str(first_item.get("content", ""))
-            else:
-                completion_text = str(first_item)
-        else:
-            completion_text = ""
+    rewards = []
 
-        predicted = _extract_predicted_label(completion_text)
-        if predicted is None:
-            rewards.append(0.0)
+    for completion_item, gold, nl_premises, nl_conclusion in zip(
+        completions, solution, premises, conclusion, strict=True
+    ):
+        text = completion_to_text(completion_item)
+
+        reward = format_reward(text)
+        formal_premises, formal_conclusion = extract_formalization(text)
+
+        if formal_premises is None or formal_conclusion is None:
+            rewards.append(reward)
             continue
 
-        rewards.append(1.0 if predicted == _normalize_label(gold) else 0.0)
+        reward += correctness_reward(
+            nl_premises=nl_premises,
+            nl_conclusion=nl_conclusion,
+            formal_premises=formal_premises,
+            formal_conclusion=formal_conclusion,
+            gold_label=gold,
+        )
+
+        rewards.append(reward)
+
     return rewards
 
 
