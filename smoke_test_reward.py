@@ -1,0 +1,24 @@
+from src.REWARDS.formatting import completion_to_text, extract_formalization, format_reward
+from src.REWARDS.proving import correctness_reward
+
+text = """Premises:
+∀x(cat(x) → mammal(x))
+cat(luna)
+
+Conclusion:
+mammal(luna)
+"""
+
+print("format reward:", format_reward(text))
+formal_premises, formal_conclusion = extract_formalization(text)
+print("formal premises:", formal_premises)
+print("formal conclusion:", formal_conclusion)
+
+reward = correctness_reward(
+    nl_premises="All cats are mammals. Luna is a cat.",
+    nl_conclusion="Luna is a mammal.",
+    formal_premises=formal_premises,
+    formal_conclusion=formal_conclusion,
+    gold_label="true",
+)
+print("correctness reward:", reward)

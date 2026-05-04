@@ -21,6 +21,8 @@ data/*
 !data/wikidata_topics.csv
 !data/Prompt_Examples
 outputs
+src/outputs
+mlruns
 src/agent_reasoning/symbolic_solver/fol/antlr/*
 !src/agent_reasoning/symbolic_solver/fol/antlr/fol.g4
 !src/agent_reasoning/symbolic_solver/fol/antlr/__init__.pyi

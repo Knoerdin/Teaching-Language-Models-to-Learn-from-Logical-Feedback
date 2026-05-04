@@ -4,9 +4,9 @@ defaults:
   - _self_
 
 dataset:
-  train_path: /Users/nordin/git_clones/Teaching-Language-Models-to-Learn-from-Logical-Feedback/DATA/FOLIO/folio_train.jsonl
-  validation_path: /Users/nordin/git_clones/Teaching-Language-Models-to-Learn-from-Logical-Feedback/DATA/FOLIO/folio_validation.jsonl
-  test_path: /Users/nordin/git_clones/Teaching-Language-Models-to-Learn-from-Logical-Feedback/DATA/FOLIO/folio_test.jsonl
+  train_path: DATA/FOLIO/folio_train.jsonl
+  validation_path: DATA/FOLIO/folio_validation.jsonl
+  test_path: DATA/FOLIO/folio_test.jsonl
 
 experiment:
   name: logical-feedback-training

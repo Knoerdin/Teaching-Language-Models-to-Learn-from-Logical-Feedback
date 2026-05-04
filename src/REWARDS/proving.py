@@ -1,10 +1,13 @@
 from functools import lru_cache
+from pathlib import Path
 
-import hydra
-from omegaconf import OmegaConf
+from functools import lru_cache
 
-import agent_reasoning
-import agent_reasoning.utils
+from agent_reasoning.symbolic_solver import TheoremProverPipeline
+from agent_reasoning.symbolic_solver.fol import TPTPParser, FOLLinter
+
+from agent_reasoning.symbolic_solver.fol.tools import VampireReasoner
+
 from agent_reasoning.pipeline import CombinedReasoningProblem
 
 
@@ -14,12 +17,20 @@ LABEL_MAP = {
     "uncertain": "UNKNOWN",
 }
 
-
 @lru_cache(maxsize=1)
 def get_solver():
-    agent_reasoning.utils.register_configs()
-    cfg = OmegaConf.load("/path/to/agent_reasoning_rl/configs/model/ATP.yaml")
-    return hydra.utils.instantiate(cfg, _convert_="partial")
+    parser = TPTPParser(convert=True, feedback_msg=True)
+    solver = VampireReasoner()
+    linter = FOLLinter()
+    tests = []
+
+    return TheoremProverPipeline(
+        parser=parser,
+        solver=solver,
+        linter=linter,
+        tests=tests,
+        inconsistent_as_error=True,
+    )
 
 
 def correctness_reward(

@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 import hydra
+from trl import GRPOConfig, GRPOTrainer
+
 import torch
 from datasets import Dataset, load_dataset
 from hydra.utils import instantiate
@@ -35,19 +37,20 @@ def _extract_predicted_label(text: str) -> str | None:
     return match.group(1)
 
 
-def _build_prompt(example: dict[str, Any]) -> str:
+def _build_prompt(example):
     return (
-        "You are an autoformalization model.\n"
-        "Translate the natural-language reasoning problem into first-order logic.\n"
-        "Return exactly this format:\n\n"
+        "Translate the following reasoning problem into first-order logic.\n"
+        "Use the same notation as these operators: ∀, ∃, ¬, →, ∧, ∨, ⊕.\n"
+        "Output exactly in this format:\n\n"
         "Premises:\n"
-        "<one formal premise per line>\n\n"
+        "<one FOL premise per line>\n\n"
         "Conclusion:\n"
-        "<one formal conclusion>\n\n"
+        "<one FOL conclusion>\n\n"
+        "Do not explain.\n"
+        "Do not restate the problem.\n"
         "Do not answer True, False, or Uncertain.\n\n"
         f"Natural-language premises:\n{example['premises']}\n\n"
-        f"Natural-language conclusion:\n{example['conclusion']}\n\n"
-        "Formalization:\n"
+        f"Natural-language conclusion:\n{example['conclusion']}\n"
     )
 
 
@@ -65,12 +68,13 @@ def _prepare_dataset(path: str) -> Dataset:
                 f"Unsupported label '{row['label']}'. "
                 f"Expected one of: {sorted(VALID_LABELS)}"
             )
-
         return {
             "prompt": _build_prompt(row),
-            "solution": label,
-            "premises": str(row["premises"]),
-            "conclusion": str(row["conclusion"]),
+            "solution": _normalize_label(str(row["label"])),
+            "premises": row["premises"],
+            "conclusion": row["conclusion"],
+            "premises_fol_gold": row["premises-FOL"],
+            "conclusion_fol_gold": row["conclusion-FOL"],
             "example_id": str(row.get("example_id", "")),
         }
 
@@ -108,7 +112,10 @@ def logical_feedback_reward(
         )
 
         rewards.append(reward)
-
+    print("COMPLETION:", text)
+    print("FORMAT_REWARD:", format_reward(text))
+    print("FORMAL_PREMISES:", formal_premises)
+    print("FORMAL_CONCLUSION:", formal_conclusion)
     return rewards
 
 
@@ -149,22 +156,25 @@ def main(cfg: DictConfig) -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    trainer_args = instantiate(
-        cfg.trainer.args,
-        output_dir=str(cfg.trainer.output_dir),
-        run_name=str(cfg.experiment.name),
-        use_cpu=(runtime_device == "cpu"),
-        dataloader_pin_memory=(runtime_device == "cuda"),
-    )
 
-    trainer = instantiate(
-        cfg.trainer.trainer_cls,
-        model=str(cfg.model.model_name_or_path),
-        reward_funcs=logical_feedback_reward,
-        args=trainer_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        processing_class=tokenizer,
+    trainer_args_dict = OmegaConf.to_container(cfg.trainer.args, resolve=True)
+
+    trainer_args_dict.pop("_target_", None)
+
+    trainer_args_dict["output_dir"] = str(cfg.trainer.output_dir)
+    trainer_args_dict["run_name"] = str(cfg.experiment.name)
+    trainer_args_dict["use_cpu"] = (runtime_device == "cpu")
+    trainer_args_dict["dataloader_pin_memory"] = (runtime_device == "cuda")
+
+    trainer_args = GRPOConfig(**trainer_args_dict)
+
+    trainer = GRPOTrainer(
+    model=str(cfg.model.model_name_or_path),
+    reward_funcs=logical_feedback_reward,
+    args=trainer_args,
+    train_dataset=train_dataset,
+    eval_dataset=eval_dataset,
+    processing_class=tokenizer,
     )
 
     print(f"Starting training {OmegaConf.to_yaml(cfg)} on device: {runtime_device}")

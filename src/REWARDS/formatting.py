@@ -34,15 +34,20 @@ def extract_formalization(text: str) -> tuple[str | None, str | None]:
 
 
 def format_reward(text: str) -> float:
+    reward = 0.0
+    lower = text.lower()
+
+    if "premises:" in lower:
+        reward += 0.1
+    if "conclusion:" in lower:
+        reward += 0.1
+
+    logic_markers = ["forall", "exists", "->", "(", ")", "¬", "∧", "∨"]
+    if any(marker in lower for marker in logic_markers):
+        reward += 0.2
+
     formal_premises, formal_conclusion = extract_formalization(text)
-
-    if formal_premises is None or formal_conclusion is None:
-        return 0.0
-
-    reward = 0.2
-
-    logic_markers = ["∀", "∃", "->", "→", "&", "∧", "|", "∨", "~", "¬", "(", ")"]
-    if any(marker in text for marker in logic_markers):
+    if formal_premises is not None and formal_conclusion is not None:
         reward += 0.2
 
     return reward
