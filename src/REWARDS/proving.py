@@ -105,7 +105,7 @@ def evaluate_correctness(
     state_status = str(getattr(state, "status", ""))
     if state_status.upper() == "PARSE":
         return ProverReward(
-            reward=-0.5,
+            reward=-2.0,
             status="parse_error",
             prediction=str(pred),
             state_status=state_status,

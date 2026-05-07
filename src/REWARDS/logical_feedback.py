@@ -6,6 +6,9 @@ from typing import Any
 from .formatting import completion_to_text, extract_formalization, format_reward
 from .mlflow_logging import log_reward_batch
 
+UNPARSEABLE_REWARD = -2.0
+UNPARSEABLE_STATUSES = {"parse_error", "exception"}
+
 
 @dataclass(frozen=True)
 class RewardBreakdown:
@@ -97,9 +100,9 @@ def score_logical_feedback_breakdown(
 
     if formal_premises is None or formal_conclusion is None:
         return RewardBreakdown(
-            total_reward=formatting_score,
+            total_reward=UNPARSEABLE_REWARD,
             format_reward=formatting_score,
-            correctness_reward=0.0,
+            correctness_reward=UNPARSEABLE_REWARD,
             parsed=False,
             prover_attempted=False,
             prover_status="not_parsed",
@@ -115,11 +118,16 @@ def score_logical_feedback_breakdown(
         formal_conclusion=formal_conclusion,
         gold_label=gold_label,
     )
+    correctness_score = prover_result.reward
+    total_reward = formatting_score + correctness_score
+    if prover_result.status in UNPARSEABLE_STATUSES:
+        correctness_score = UNPARSEABLE_REWARD
+        total_reward = UNPARSEABLE_REWARD
 
     return RewardBreakdown(
-        total_reward=formatting_score + prover_result.reward,
+        total_reward=total_reward,
         format_reward=formatting_score,
-        correctness_reward=prover_result.reward,
+        correctness_reward=correctness_score,
         parsed=True,
         prover_attempted=True,
         prover_status=prover_result.status,
