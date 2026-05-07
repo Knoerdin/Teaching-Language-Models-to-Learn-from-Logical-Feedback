@@ -1,0 +1,5 @@
+name: qwen3.5-4b-test
+model_name_or_path: Qwen/Qwen3.5-4B
+tokenizer_name_or_path: Qwen/Qwen3.5-4B
+torch_dtype: auto
+trust_remote_code: true
