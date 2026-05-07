@@ -12,6 +12,7 @@ from transformers import AutoTokenizer, set_seed
 from trl import GRPOConfig, GRPOTrainer
 
 from REWARDS.logical_feedback import logical_feedback_reward
+from REWARDS.mlflow_logging import configure_reward_logging, flush_reward_logging
 
 
 VALID_LABELS = {"true", "false", "uncertain"}
@@ -111,11 +112,42 @@ def _resolve_runtime_device(cfg: DictConfig) -> str:
     return "cpu"
 
 
+def _configure_reward_logging(cfg: DictConfig):
+    mlflow_cfg = cfg.trainer.get("mlflow", {})
+    enabled = bool(mlflow_cfg.get("enabled", True))
+    tracking_uri = mlflow_cfg.get("tracking_uri", None)
+    artifact_subdir = str(mlflow_cfg.get("artifact_subdir", "reward_plots"))
+    plot_every_n_steps = int(mlflow_cfg.get("plot_every_n_steps", 10))
+    experiment_name = mlflow_cfg.get("experiment_name", None) or cfg.experiment.name
+    run_name = mlflow_cfg.get("run_name", None) or cfg.experiment.name
+
+    logger = configure_reward_logging(
+        enabled=enabled,
+        tracking_uri=tracking_uri,
+        experiment_name=str(experiment_name),
+        run_name=str(run_name),
+        artifact_subdir=artifact_subdir,
+        plot_every_n_steps=plot_every_n_steps,
+    )
+    logger.log_params(
+        {
+            "model_name_or_path": cfg.model.model_name_or_path,
+            "trainer_output_dir": cfg.trainer.output_dir,
+            "trainer_device": cfg.trainer.get("device", "auto"),
+            "dataset_train_path": cfg.dataset.train_path,
+            "dataset_validation_path": cfg.dataset.validation_path,
+        }
+    )
+
+    return logger
+
+
 @hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
 def main(cfg: DictConfig) -> None:
     set_seed(int(cfg.trainer.seed))
     runtime_device = _resolve_runtime_device(cfg)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    _configure_reward_logging(cfg)
 
     train_dataset = _prepare_dataset(str(cfg.dataset.train_path))
     eval_dataset = _prepare_dataset(str(cfg.dataset.validation_path))
@@ -147,8 +179,11 @@ def main(cfg: DictConfig) -> None:
 
     print(f"Starting training {OmegaConf.to_yaml(cfg)} on device: {runtime_device}")
 
-    trainer.train()
-    trainer.save_model(str(cfg.trainer.output_dir))
+    try:
+        trainer.train()
+        trainer.save_model(str(cfg.trainer.output_dir))
+    finally:
+        flush_reward_logging()
 
 
 if __name__ == "__main__":

@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from functools import lru_cache
 import warnings
 
@@ -18,6 +19,14 @@ LABEL_MAP = {
 
 class SolverUnavailableError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class ProverReward:
+    reward: float
+    status: str
+    prediction: str | None = None
+    state_status: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -71,13 +80,13 @@ def get_solver():
     )
 
 
-def correctness_reward(
+def evaluate_correctness(
     nl_premises: str,
     nl_conclusion: str,
     formal_premises: str,
     formal_conclusion: str,
     gold_label: str,
-) -> float:
+) -> ProverReward:
     CombinedReasoningProblem, *_ = _solver_dependencies()
     solver = get_solver()
 
@@ -91,19 +100,61 @@ def correctness_reward(
     try:
         pred, state = solver.predict(problem)
     except Exception:
-        return -1.0
+        return ProverReward(reward=-1.0, status="exception")
 
-    if getattr(state, "status", None) == "PARSE":
-        return -0.5
+    state_status = str(getattr(state, "status", ""))
+    if state_status.upper() == "PARSE":
+        return ProverReward(
+            reward=-0.5,
+            status="parse_error",
+            prediction=str(pred),
+            state_status=state_status,
+        )
 
     gold = LABEL_MAP.get(gold_label.lower())
     if gold is None:
-        return -1.0
+        return ProverReward(
+            reward=-1.0,
+            status="invalid_label",
+            prediction=str(pred),
+            state_status=state_status,
+        )
 
     if str(pred).upper() == gold:
-        return 1.0
+        return ProverReward(
+            reward=1.0,
+            status="correct",
+            prediction=str(pred),
+            state_status=state_status,
+        )
 
     if str(pred).upper() == "UNKNOWN":
-        return 0.0
+        return ProverReward(
+            reward=0.0,
+            status="unknown",
+            prediction=str(pred),
+            state_status=state_status,
+        )
 
-    return -1.0
+    return ProverReward(
+        reward=-1.0,
+        status="incorrect",
+        prediction=str(pred),
+        state_status=state_status,
+    )
+
+
+def correctness_reward(
+    nl_premises: str,
+    nl_conclusion: str,
+    formal_premises: str,
+    formal_conclusion: str,
+    gold_label: str,
+) -> float:
+    return evaluate_correctness(
+        nl_premises=nl_premises,
+        nl_conclusion=nl_conclusion,
+        formal_premises=formal_premises,
+        formal_conclusion=formal_conclusion,
+        gold_label=gold_label,
+    ).reward
