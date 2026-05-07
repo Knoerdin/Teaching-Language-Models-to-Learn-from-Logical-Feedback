@@ -12,6 +12,7 @@ from typing import Any, Protocol
 class RewardBreakdownLike(Protocol):
     total_reward: float
     format_reward: float
+    parsability_reward: float
     correctness_reward: float
     parsed: bool
     prover_attempted: bool
@@ -111,6 +112,7 @@ class MLflowRewardLogger:
 
         totals = [breakdown.total_reward for breakdown in breakdowns]
         formats = [breakdown.format_reward for breakdown in breakdowns]
+        parsability = [breakdown.parsability_reward for breakdown in breakdowns]
         correctness = [breakdown.correctness_reward for breakdown in breakdowns]
 
         metrics = {
@@ -119,6 +121,7 @@ class MLflowRewardLogger:
             "reward/total_max": max(totals),
             "reward/total_std": float(pstdev(totals)) if len(totals) > 1 else 0.0,
             "reward/format_mean": _mean(formats),
+            "reward/parsability_mean": _mean(parsability),
             "reward/correctness_mean": _mean(correctness),
             "reward/parse_success_rate": _rate(
                 [breakdown.parsed for breakdown in breakdowns]
@@ -188,6 +191,11 @@ class MLflowRewardLogger:
 
         axes[0].plot(steps, [row["reward/total_mean"] for row in self.history], label="total")
         axes[0].plot(steps, [row["reward/format_mean"] for row in self.history], label="format")
+        axes[0].plot(
+            steps,
+            [row["reward/parsability_mean"] for row in self.history],
+            label="parsability",
+        )
         axes[0].plot(
             steps,
             [row["reward/correctness_mean"] for row in self.history],

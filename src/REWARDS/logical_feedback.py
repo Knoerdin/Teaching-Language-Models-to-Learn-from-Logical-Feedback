@@ -6,7 +6,7 @@ from typing import Any
 from .formatting import completion_to_text, extract_formalization, format_reward
 from .mlflow_logging import log_reward_batch
 
-UNPARSEABLE_REWARD = -2.0
+UNPARSEABLE_PARSABILITY_REWARD = -2.0
 UNPARSEABLE_STATUSES = {"parse_error", "exception"}
 
 
@@ -14,6 +14,7 @@ UNPARSEABLE_STATUSES = {"parse_error", "exception"}
 class RewardBreakdown:
     total_reward: float
     format_reward: float
+    parsability_reward: float
     correctness_reward: float
     parsed: bool
     prover_attempted: bool
@@ -73,6 +74,7 @@ def _print_autoformalizations(breakdowns: list[RewardBreakdown]) -> None:
         print(
             f"sample {index}: total={breakdown.total_reward:.3f} "
             f"format={breakdown.format_reward:.3f} "
+            f"parsability={breakdown.parsability_reward:.3f} "
             f"correctness={breakdown.correctness_reward:.3f} "
             f"status={breakdown.prover_status}"
         )
@@ -99,10 +101,12 @@ def score_logical_feedback_breakdown(
     formal_premises, formal_conclusion = extract_formalization(text)
 
     if formal_premises is None or formal_conclusion is None:
+        parsability_score = UNPARSEABLE_PARSABILITY_REWARD
         return RewardBreakdown(
-            total_reward=UNPARSEABLE_REWARD,
+            total_reward=formatting_score + parsability_score,
             format_reward=formatting_score,
-            correctness_reward=UNPARSEABLE_REWARD,
+            parsability_reward=parsability_score,
+            correctness_reward=0.0,
             parsed=False,
             prover_attempted=False,
             prover_status="not_parsed",
@@ -119,14 +123,16 @@ def score_logical_feedback_breakdown(
         gold_label=gold_label,
     )
     correctness_score = prover_result.reward
-    total_reward = formatting_score + correctness_score
+    parsability_score = 0.0
     if prover_result.status in UNPARSEABLE_STATUSES:
-        correctness_score = UNPARSEABLE_REWARD
-        total_reward = UNPARSEABLE_REWARD
+        parsability_score = UNPARSEABLE_PARSABILITY_REWARD
+        correctness_score = 0.0
+    total_reward = formatting_score + parsability_score + correctness_score
 
     return RewardBreakdown(
         total_reward=total_reward,
         format_reward=formatting_score,
+        parsability_reward=parsability_score,
         correctness_reward=correctness_score,
         parsed=True,
         prover_attempted=True,
