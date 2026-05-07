@@ -1,0 +1,24 @@
+#!/bin/bash
+#SBATCH --job-name=grpo_train
+#SBATCH --output=logs/job_%j.out
+#SBATCH --error=logs/job_%j.err
+#SBATCH --time=08:00:00
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=4
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=240G
+
+module purge
+module load 2025
+module load Python
+
+cd /scratch/$USER/Teaching-Language-Models-to-Learn-from-Logical-Feedback
+source env/bin/activate
+
+echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+nvidia-smi
+free -h
+
+torchrun --nproc_per_node=4 src/trainer.py \
+  TRAINERS@trainer=GRPO_qwen2.5-7b \
+  MODELS@model=qwen2.5-7b

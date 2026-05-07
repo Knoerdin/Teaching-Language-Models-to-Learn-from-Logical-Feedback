@@ -1,4 +1,4 @@
-model_name_or_path: Qwen/Qwen2.5-0.5B
-tokenizer_name_or_path: Qwen/Qwen2.5-0.5B
+model_name_or_path: Qwen/Qwen2.5-1.5B
+tokenizer_name_or_path: Qwen/Qwen2.5-1.5B
 torch_dtype: auto
 trust_remote_code: true

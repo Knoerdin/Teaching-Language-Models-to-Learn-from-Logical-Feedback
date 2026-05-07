@@ -1,0 +1,16 @@
+output_dir: outputs/grpo_qwen2.5-7b
+seed: 42
+device: auto
+
+trainer_cls:
+  _target_: trl.GRPOTrainer
+
+args:
+  _target_: trl.GRPOConfig
+  learning_rate: 5.0e-6
+  per_device_train_batch_size: 1
+  generation_batch_size: 4
+  num_generations: 4
+  max_steps: 500
+  logging_steps: 10
+  report_to: none

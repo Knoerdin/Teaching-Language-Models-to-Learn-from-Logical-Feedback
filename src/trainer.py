@@ -39,7 +39,7 @@ def _extract_predicted_label(text: str) -> str | None:
 
 def _build_prompt(example):
     return (
-        "Translate the following reasoning problem into first-order logic.\n"
+        "Translate the following Natural-language reasoning problem into first-order logic.\n"
         "Use the same notation as these operators: ∀, ∃, ¬, →, ∧, ∨, ⊕.\n"
         "Output exactly in this format:\n\n"
         "Premises:\n"
@@ -51,6 +51,29 @@ def _build_prompt(example):
         "Do not answer True, False, or Uncertain.\n\n"
         f"Natural-language premises:\n{example['premises']}\n\n"
         f"Natural-language conclusion:\n{example['conclusion']}\n"
+
+        "This is an EXAMPLE of the expected input output format:\n\n"
+        "INPUT:\n"
+        "Premises NL\":\"All eels are fish. \n"
+        "No fish are plants. \n"
+        "Everything displayed in the collection is either a plant or an animal.\n"
+        "All multicellular animals are not bacteria.\n"
+        "All animals displayed in the collection are multicellular.\n"
+        "A sea eel is displayed in the collection.\n"
+        "The sea eel is an eel or an animal or not a plant.\n"
+        "Conclusion NL:\n"
+        "The sea eel is an eel.\n\n"
+        "OUTPUT:\n"
+        "Premises FOL:\n"
+        "∀x (Eel(x) → Fish(x))\n"
+        "∀x (Fish(x) → ¬Plant(x))\n"
+        "∀x (DisplayedIn(x, collection) → Plant(x) ⊕ Animal(x))\n"
+        "∀x (Multicellular(x) → ¬Bacteria(x))\n"
+        "∀x (DisplayedIn(x, collection) ∧ Animal(x) → Multicellular(x))\n"
+        "DisplayedIn(seaEel, collection)\n"
+        "Eel(seaEel) ∨ Animal(seaEel) ∨ ¬Plant(seaEel)\n"
+        "Conclusion FOL:\n"
+        "Eel(seaEel)"
     )
 
 
