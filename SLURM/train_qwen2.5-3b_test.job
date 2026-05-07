@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=grpo_qwen25_3b_test
 #SBATCH --output=logs/job_%j.out
-#SBATCH --error=logs/job_%j.err
+#SBATCH --error=logs/job_%j.out
 #SBATCH --time=08:00:00
 #SBATCH --partition=gpu_h100
 #SBATCH --gpus=1
@@ -10,17 +10,40 @@
 
 set -euo pipefail
 
+echo "[$(date)] Starting ${SLURM_JOB_NAME:-job} ${SLURM_JOB_ID:-unknown} on $(hostname)"
+echo "Submit directory: ${SLURM_SUBMIT_DIR:-unknown}"
+
 module purge
 module load 2025
-module load Python
 
-cd /scratch/$USER/Teaching-Language-Models-to-Learn-from-Logical-Feedback
-source env/bin/activate
+PROJECT_DIR="/scratch/${USER}/Teaching-Language-Models-to-Learn-from-Logical-Feedback"
+if [ ! -d "$PROJECT_DIR" ]; then
+  echo "Project directory does not exist: $PROJECT_DIR"
+  exit 1
+fi
+cd "$PROJECT_DIR"
+
+if [ -f env/bin/activate ]; then
+  source env/bin/activate
+elif [ -f .venv/bin/activate ]; then
+  source .venv/bin/activate
+else
+  echo "No virtual environment found at env/bin/activate or .venv/bin/activate"
+  exit 1
+fi
+
+export PYTHONUNBUFFERED=1
+export HYDRA_FULL_ERROR=1
+
+echo "Python: $(command -v python)"
+python --version
 
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 nvidia-smi
 free -h
 
-python src/trainer.py \
+echo "[$(date)] Launching training"
+python -u src/trainer.py \
   TRAINERS@trainer=tests/GRPO_qwen2.5-3b_test \
   MODELS@model=tests/qwen2.5-3b_test
+echo "[$(date)] Training finished"

@@ -1,0 +1,1 @@
+Keep this directory so Slurm can open logs/job_%j.out before the job script starts.
