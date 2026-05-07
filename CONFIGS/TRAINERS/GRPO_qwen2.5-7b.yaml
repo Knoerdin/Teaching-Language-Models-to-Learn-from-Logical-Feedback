@@ -10,6 +10,13 @@ mlflow:
   artifact_subdir: reward_plots
   plot_every_n_steps: 10
 
+terminal:
+  print_autoformalizations: true
+  print_autoformalizations_every_n_steps: 10
+  max_autoformalizations: 1
+  max_autoformalization_chars: 2000
+  show_dataset_progress: false
+
 trainer_cls:
   _target_: trl.GRPOTrainer
 

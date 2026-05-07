@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import logging
 import os
 import tempfile
 from pathlib import Path
@@ -75,6 +76,7 @@ class MLflowRewardLogger:
         if self._mlflow is None:
             import mlflow
 
+            logging.getLogger("mlflow").setLevel(logging.WARNING)
             self._mlflow = mlflow
             if self.tracking_uri:
                 mlflow.set_tracking_uri(self.tracking_uri)

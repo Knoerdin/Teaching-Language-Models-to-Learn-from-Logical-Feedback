@@ -6,11 +6,12 @@ from typing import Any
 
 import hydra
 import torch
-from datasets import Dataset, load_dataset
+from datasets import Dataset, disable_progress_bar, enable_progress_bar, load_dataset
 from omegaconf import DictConfig, OmegaConf
-from transformers import AutoTokenizer, set_seed
+from transformers import AutoTokenizer, logging as transformers_logging, set_seed
 from trl import GRPOConfig, GRPOTrainer
 
+from REWARDS.logical_feedback import configure_reward_console
 from REWARDS.logical_feedback import logical_feedback_reward
 from REWARDS.mlflow_logging import configure_reward_logging, flush_reward_logging
 
@@ -24,41 +25,48 @@ def _normalize_label(value: str) -> str:
 
 def _build_prompt(example):
     return (
-        "Translate the following Natural-language reasoning problem into first-order logic.\n"
-        "Use the same notation as these operators: ∀, ∃, ¬, →, ∧, ∨, ⊕.\n"
-        "Output exactly in this format:\n\n"
+        "Translate natural-language premises and conclusion into first-order logic.\n"
+        "Return only the formalization. Do not solve the problem, do not explain, "
+        "and do not output True, False, or Uncertain.\n\n"
+        "Use exactly these two section labels:\n"
         "Premises:\n"
-        "<one FOL premise per line>\n\n"
+        "<one complete FOL premise per line>\n\n"
         "Conclusion:\n"
-        "<one FOL conclusion>\n\n"
-        "Do not explain.\n"
-        "Do not restate the problem.\n"
-        "Do not answer True, False, or Uncertain.\n\n"
-        f"Natural-language premises:\n{example['premises']}\n\n"
-        f"Natural-language conclusion:\n{example['conclusion']}\n"
-
-        "This is an EXAMPLE of the expected input output format:\n\n"
-        "INPUT:\n"
-        "Premises NL\":\"All eels are fish. \n"
-        "No fish are plants. \n"
+        "<one complete FOL conclusion>\n\n"
+        "Formula rules:\n"
+        "Use only these logical operators: ∀, ∃, ¬, →, ∧, ∨, ⊕.\n"
+        "Operator meanings: ∀ means for all; ∃ means there exists; ¬ means not; "
+        "→ means implies; ∧ means and; ∨ means inclusive or; ⊕ means exclusive or.\n"
+        "Do not use ↔, ⇔, ⇒, ∴, bullets, markdown, quotes, or extra labels.\n"
+        "Predicate, variable, and constant names must use English letters, digits, or underscores.\n"
+        "Every line must be a complete formula with balanced parentheses.\n"
+        "If a sentence is simple, prefer a simple atomic formula such as Cat(luna).\n"
+        "Stop immediately after the conclusion formula.\n\n"
+        "Example natural-language premises:\n"
+        "All eels are fish.\n"
+        "No fish are plants.\n"
         "Everything displayed in the collection is either a plant or an animal.\n"
         "All multicellular animals are not bacteria.\n"
         "All animals displayed in the collection are multicellular.\n"
         "A sea eel is displayed in the collection.\n"
-        "The sea eel is an eel or an animal or not a plant.\n"
-        "Conclusion NL:\n"
+        "The sea eel is an eel or an animal or not a plant.\n\n"
+        "Example natural-language conclusion:\n"
         "The sea eel is an eel.\n\n"
-        "OUTPUT:\n"
-        "Premises FOL:\n"
+        "Correct formalization for the example:\n"
+        "Premises:\n"
         "∀x (Eel(x) → Fish(x))\n"
         "∀x (Fish(x) → ¬Plant(x))\n"
         "∀x (DisplayedIn(x, collection) → Plant(x) ⊕ Animal(x))\n"
-        "∀x (Multicellular(x) → ¬Bacteria(x))\n"
+        "∀x (Multicellular(x) ∧ Animal(x) → ¬Bacteria(x))\n"
         "∀x (DisplayedIn(x, collection) ∧ Animal(x) → Multicellular(x))\n"
         "DisplayedIn(seaEel, collection)\n"
-        "Eel(seaEel) ∨ Animal(seaEel) ∨ ¬Plant(seaEel)\n"
-        "Conclusion FOL:\n"
-        "Eel(seaEel)"
+        "Eel(seaEel) ∨ Animal(seaEel) ∨ ¬Plant(seaEel)\n\n"
+        "Conclusion:\n"
+        "Eel(seaEel)\n\n"
+        "Now translate this problem. Do not copy the example.\n\n"
+        f"Natural-language premises:\n{example['premises']}\n\n"
+        f"Natural-language conclusion:\n{example['conclusion']}\n\n"
+        "Your answer must begin with Premises: and contain only the two required sections.\n"
     )
 
 
@@ -142,11 +150,61 @@ def _configure_reward_logging(cfg: DictConfig):
     return logger
 
 
+def _configure_terminal_output(cfg: DictConfig) -> None:
+    terminal_cfg = cfg.trainer.get("terminal", {})
+    if bool(terminal_cfg.get("show_dataset_progress", False)):
+        enable_progress_bar()
+    else:
+        disable_progress_bar()
+    transformers_logging.set_verbosity_warning()
+
+    configure_reward_console(
+        print_autoformalizations=bool(
+            terminal_cfg.get("print_autoformalizations", True)
+        ),
+        print_every_n_steps=int(
+            terminal_cfg.get("print_autoformalizations_every_n_steps", 10)
+        ),
+        max_examples=int(terminal_cfg.get("max_autoformalizations", 1)),
+        max_chars=int(terminal_cfg.get("max_autoformalization_chars", 2000)),
+    )
+
+
+def _print_training_summary(cfg: DictConfig, runtime_device: str) -> None:
+    args = cfg.trainer.args
+    mlflow_cfg = cfg.trainer.get("mlflow", {})
+    terminal_cfg = cfg.trainer.get("terminal", {})
+
+    print("Starting training")
+    print(f"  model: {cfg.model.model_name_or_path}")
+    print(f"  device: {runtime_device}")
+    print(f"  output_dir: {cfg.trainer.output_dir}")
+    print(
+        "  steps/batch/gen: "
+        f"{args.max_steps}/{args.per_device_train_batch_size}/"
+        f"{args.get('num_generations', 'n/a')}"
+    )
+    print(
+        "  mlflow: "
+        f"enabled={mlflow_cfg.get('enabled', True)} "
+        f"experiment={mlflow_cfg.get('experiment_name', None) or cfg.experiment.name}"
+    )
+    if terminal_cfg.get("print_autoformalizations", True):
+        print(
+            "  autoformalizations: "
+            "printing "
+            f"{terminal_cfg.get('max_autoformalizations', 1)} sample(s) every "
+            f"{terminal_cfg.get('print_autoformalizations_every_n_steps', 10)} "
+            "reward batch(es)"
+        )
+
+
 @hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
 def main(cfg: DictConfig) -> None:
     set_seed(int(cfg.trainer.seed))
     runtime_device = _resolve_runtime_device(cfg)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+    _configure_terminal_output(cfg)
     _configure_reward_logging(cfg)
 
     train_dataset = _prepare_dataset(str(cfg.dataset.train_path))
@@ -177,7 +235,7 @@ def main(cfg: DictConfig) -> None:
         processing_class=tokenizer,
     )
 
-    print(f"Starting training {OmegaConf.to_yaml(cfg)} on device: {runtime_device}")
+    _print_training_summary(cfg, runtime_device)
 
     try:
         trainer.train()
