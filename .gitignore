@@ -6,7 +6,8 @@
 ci_cd_template.*
 htmlcov
 
-.vscode
+.vscode/*
+!.vscode/settings.json
 .zed
 
 .venv

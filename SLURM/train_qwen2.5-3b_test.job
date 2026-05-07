@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=grpo_qwen25_15b_test
+#SBATCH --job-name=grpo_qwen25_3b_test
 #SBATCH --output=logs/job_%j.out
 #SBATCH --error=logs/job_%j.err
 #SBATCH --time=08:00:00
 #SBATCH --partition=gpu_h100
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=80G
 
 set -euo pipefail
 
@@ -22,5 +22,5 @@ nvidia-smi
 free -h
 
 python src/trainer.py \
-  TRAINERS@trainer=tests/GRPO_test \
-  MODELS@model=tests/qwen2.5_test
+  TRAINERS@trainer=tests/GRPO_qwen2.5-3b_test \
+  MODELS@model=tests/qwen2.5-3b_test
