@@ -1,5 +1,5 @@
-from src.REWARDS.formatting import completion_to_text, extract_formalization, format_reward
-from src.REWARDS.proving import correctness_reward
+from src.REWARDS.formatting import extract_formalization, format_reward
+from src.REWARDS.logical_feedback import score_logical_feedback
 
 text = """Premises:
 ∀x(cat(x) → mammal(x))
@@ -14,11 +14,10 @@ formal_premises, formal_conclusion = extract_formalization(text)
 print("formal premises:", formal_premises)
 print("formal conclusion:", formal_conclusion)
 
-reward = correctness_reward(
+reward = score_logical_feedback(
+    text,
     nl_premises="All cats are mammals. Luna is a cat.",
     nl_conclusion="Luna is a mammal.",
-    formal_premises=formal_premises,
-    formal_conclusion=formal_conclusion,
     gold_label="true",
 )
-print("correctness reward:", reward)
+print("combined reward:", reward)

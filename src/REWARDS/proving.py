@@ -1,14 +1,9 @@
 from functools import lru_cache
-from pathlib import Path
-
-from functools import lru_cache
-
-from agent_reasoning.symbolic_solver import TheoremProverPipeline
-from agent_reasoning.symbolic_solver.fol import TPTPParser, FOLLinter
-
-from agent_reasoning.symbolic_solver.fol.tools import VampireReasoner
 
 from agent_reasoning.pipeline import CombinedReasoningProblem
+from agent_reasoning.symbolic_solver import TheoremProverPipeline
+from agent_reasoning.symbolic_solver.fol import TPTPParser, FOLLinter
+from agent_reasoning.symbolic_solver.fol.tools import VampireReasoner
 
 
 LABEL_MAP = {
@@ -16,6 +11,7 @@ LABEL_MAP = {
     "false": "FALSE",
     "uncertain": "UNKNOWN",
 }
+
 
 @lru_cache(maxsize=1)
 def get_solver():
@@ -57,7 +53,9 @@ def correctness_reward(
     if getattr(state, "status", None) == "PARSE":
         return -0.5
 
-    gold = LABEL_MAP[gold_label.lower()]
+    gold = LABEL_MAP.get(gold_label.lower())
+    if gold is None:
+        return -1.0
 
     if str(pred).upper() == gold:
         return 1.0

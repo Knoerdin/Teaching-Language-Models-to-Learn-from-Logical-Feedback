@@ -1,26 +1,17 @@
 from __future__ import annotations
 
-from REWARDS.formatting import completion_to_text, format_reward
-from REWARDS.formatting import (
-    completion_to_text,
-    extract_formalization,
-    format_reward,
-)
-from REWARDS.proving import correctness_reward
-
 import os
-import re
 from pathlib import Path
 from typing import Any
 
 import hydra
-from trl import GRPOConfig, GRPOTrainer
-
 import torch
 from datasets import Dataset, load_dataset
-from hydra.utils import instantiate
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer, set_seed
+from trl import GRPOConfig, GRPOTrainer
+
+from REWARDS.logical_feedback import logical_feedback_reward
 
 
 VALID_LABELS = {"true", "false", "uncertain"}
@@ -28,13 +19,6 @@ VALID_LABELS = {"true", "false", "uncertain"}
 
 def _normalize_label(value: str) -> str:
     return value.strip().lower()
-
-
-def _extract_predicted_label(text: str) -> str | None:
-    match = re.search(r"\b(true|false|uncertain)\b", text.lower())
-    if not match:
-        return None
-    return match.group(1)
 
 
 def _build_prompt(example):
@@ -104,44 +88,6 @@ def _prepare_dataset(path: str) -> Dataset:
     return raw.map(_map_row, remove_columns=raw.column_names)
 
 
-def logical_feedback_reward(
-    prompts: list[str],
-    completions: list[Any],
-    solution: list[str],
-    premises: list[str],
-    conclusion: list[str],
-    **_: Any,
-) -> list[float]:
-    rewards = []
-
-    for completion_item, gold, nl_premises, nl_conclusion in zip(
-        completions, solution, premises, conclusion, strict=True
-    ):
-        text = completion_to_text(completion_item)
-
-        reward = format_reward(text)
-        formal_premises, formal_conclusion = extract_formalization(text)
-
-        if formal_premises is None or formal_conclusion is None:
-            rewards.append(reward)
-            continue
-
-        reward += correctness_reward(
-            nl_premises=nl_premises,
-            nl_conclusion=nl_conclusion,
-            formal_premises=formal_premises,
-            formal_conclusion=formal_conclusion,
-            gold_label=gold,
-        )
-
-        rewards.append(reward)
-    print("COMPLETION:", text)
-    print("FORMAT_REWARD:", format_reward(text))
-    print("FORMAL_PREMISES:", formal_premises)
-    print("FORMAL_CONCLUSION:", formal_conclusion)
-    return rewards
-
-
 def _resolve_runtime_device(cfg: DictConfig) -> str:
     requested = str(cfg.trainer.get("device", "auto")).lower()
 
@@ -179,7 +125,6 @@ def main(cfg: DictConfig) -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-
     trainer_args_dict = OmegaConf.to_container(cfg.trainer.args, resolve=True)
 
     trainer_args_dict.pop("_target_", None)
@@ -192,12 +137,12 @@ def main(cfg: DictConfig) -> None:
     trainer_args = GRPOConfig(**trainer_args_dict)
 
     trainer = GRPOTrainer(
-    model=str(cfg.model.model_name_or_path),
-    reward_funcs=logical_feedback_reward,
-    args=trainer_args,
-    train_dataset=train_dataset,
-    eval_dataset=eval_dataset,
-    processing_class=tokenizer,
+        model=str(cfg.model.model_name_or_path),
+        reward_funcs=logical_feedback_reward,
+        args=trainer_args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        processing_class=tokenizer,
     )
 
     print(f"Starting training {OmegaConf.to_yaml(cfg)} on device: {runtime_device}")
