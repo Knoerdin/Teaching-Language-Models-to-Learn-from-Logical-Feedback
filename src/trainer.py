@@ -32,9 +32,8 @@ def _normalize_label(value: str) -> str:
 def _build_prompt(example):
     return (
         "Translate natural-language premises and conclusion into first-order logic.\n"
-        "Return only the formalization. Do not solve the problem, do not explain, "
-        "and do not output True, False, or Uncertain.\n\n"
-        "Use exactly these two section labels:\n"
+        "Return only the formalization. No explanation. No truth label.\n\n"
+        "Completion format:\n"
         "Premises:\n"
         "<one complete FOL premise per line>\n\n"
         "Conclusion:\n"
@@ -44,10 +43,9 @@ def _build_prompt(example):
         "Operator meanings: ∀ means for all; ∃ means there exists; ¬ means not; "
         "→ means implies; ∧ means and; ∨ means inclusive or; ⊕ means exclusive or.\n"
         "Do not use ↔, ⇔, ⇒, ∴, bullets, markdown, quotes, or extra labels.\n"
-        "Never write chat-role words such as user, assistant, or system.\n"
+        "Do not write chat-role words such as user, assistant, or system.\n"
         "Predicate, variable, and constant names must use English letters, digits, or underscores.\n"
         "Every line must be a complete formula with balanced parentheses.\n"
-        "If a sentence is simple, prefer a simple atomic formula such as Cat(luna).\n"
         "Stop immediately after the conclusion formula.\n\n"
         "Example natural-language premises:\n"
         "All eels are fish.\n"
@@ -70,10 +68,12 @@ def _build_prompt(example):
         "Eel(seaEel) ∨ Animal(seaEel) ∨ ¬Plant(seaEel)\n\n"
         "Conclusion:\n"
         "Eel(seaEel)\n\n"
-        "Now translate this problem. Do not copy the example.\n\n"
-        f"Natural-language premises:\n{example['premises']}\n\n"
-        f"Natural-language conclusion:\n{example['conclusion']}\n\n"
-        "Your answer must begin with Premises: and contain only the two required sections.\n"
+        "Problem natural-language premises:\n"
+        f"{example['premises']}\n\n"
+        "Problem natural-language conclusion:\n"
+        f"{example['conclusion']}\n\n"
+        "Formalization:\n"
+        "Premises:\n"
     )
 
 
@@ -241,6 +241,12 @@ def _add_generation_guards(
             "system",
             " system",
             "\nsystem",
+            "Your",
+            " Your",
+            "\nYour",
+            "your",
+            " your",
+            "\nyour",
         ],
     )
 

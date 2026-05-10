@@ -11,6 +11,14 @@ FORMALIZATION_PATTERN = re.compile(
     r"Premises(?:\s+FOL)?:\s*(.*?)\s*Conclusion(?:\s+FOL)?:\s*(.*)",
     flags=re.DOTALL | re.IGNORECASE,
 )
+PREFIXED_FORMALIZATION_PATTERN = re.compile(
+    r"^\s*(.*?)\s*Conclusion(?:\s+FOL)?:\s*(.*)",
+    flags=re.DOTALL | re.IGNORECASE,
+)
+SECTION_HEADER_LINE_PATTERN = re.compile(
+    r"^\s*(?:Premises|Conclusion)(?:\s+FOL)?:\s*$",
+    flags=re.IGNORECASE,
+)
 ROLE_MARKER_LINE_PATTERN = re.compile(
     r"^\s*(?:user|assistant|system)\s*:?\s*$",
     flags=re.IGNORECASE,
@@ -24,6 +32,11 @@ INLINE_ROLE_MARKER_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 UNSUPPORTED_SYMBOL_PATTERN = re.compile(r"(\[|\]|~|↦|∉|∈|⇒|⇔|↔)")
+PROMPT_COPY_PATTERN = re.compile(
+    r"(Your answer|Return only|No explanation|No truth label|Formula rules|"
+    r"Completion format|Translate natural-language)",
+    flags=re.IGNORECASE,
+)
 
 
 def completion_to_text(completion_item) -> str:
@@ -41,12 +54,16 @@ def completion_to_text(completion_item) -> str:
 
 def extract_formalization(text: str) -> tuple[str | None, str | None]:
     match = FORMALIZATION_PATTERN.search(text)
+    if match:
+        formal_premises = _clean_premises_section(match.group(1))
+        formal_conclusion = _clean_conclusion_section(match.group(2))
+    else:
+        match = PREFIXED_FORMALIZATION_PATTERN.search(text)
+        if not match:
+            return None, None
 
-    if not match:
-        return None, None
-
-    formal_premises = _clean_premises_section(match.group(1))
-    formal_conclusion = _clean_conclusion_section(match.group(2))
+        formal_premises = _clean_premises_section(match.group(1))
+        formal_conclusion = _clean_conclusion_section(match.group(2))
 
     if not formal_premises or not formal_conclusion:
         return None, None
@@ -56,6 +73,10 @@ def extract_formalization(text: str) -> tuple[str | None, str | None]:
 
 def _is_role_marker_line(line: str) -> bool:
     return ROLE_MARKER_LINE_PATTERN.fullmatch(line) is not None
+
+
+def _is_section_header_line(line: str) -> bool:
+    return SECTION_HEADER_LINE_PATTERN.fullmatch(line) is not None
 
 
 def _is_role_marker_suffix(text: str) -> bool:
@@ -92,6 +113,8 @@ def _clean_premises_section(text: str) -> str:
         stripped = line.strip()
         if not stripped:
             continue
+        if _is_section_header_line(stripped):
+            continue
         if _is_role_marker_line(stripped):
             break
         lines.append(_trim_role_suffix_from_formula_line(stripped))
@@ -103,6 +126,8 @@ def _clean_conclusion_section(text: str) -> str:
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped:
+            continue
+        if _is_section_header_line(stripped):
             continue
         if _is_role_marker_line(stripped):
             break
@@ -126,6 +151,36 @@ def _extra_header_count(text: str) -> int:
 
 def _has_unsupported_symbols(text: str) -> bool:
     return UNSUPPORTED_SYMBOL_PATTERN.search(text) is not None
+
+
+def _has_prompt_copy_junk(text: str) -> bool:
+    return PROMPT_COPY_PATTERN.search(text) is not None
+
+
+def _has_repetition_loop(text: str) -> bool:
+    lines = [line.strip().lower() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+
+    line_counts = {}
+    for line in lines:
+        line_counts[line] = line_counts.get(line, 0) + 1
+        if line_counts[line] >= 4:
+            return True
+
+    words = re.findall(r"\b[A-Za-z]{3,}\b", text.lower())
+    repeated = 1
+    previous_word = None
+    for word in words:
+        if word == previous_word:
+            repeated += 1
+            if repeated >= 6:
+                return True
+        else:
+            repeated = 1
+            previous_word = word
+
+    return False
 
 
 def _nonempty_lines(text: str) -> list[str]:
@@ -164,6 +219,10 @@ def format_reward(text: str) -> float:
         reward -= 0.35
     if _has_unsupported_symbols(text):
         reward -= 0.25
+    if _has_prompt_copy_junk(text):
+        reward -= 0.75
+    if _has_repetition_loop(text):
+        reward -= 0.50
 
     reward -= min(_extra_header_count(text) * 0.10, 0.40)
 
