@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,11 @@ from REWARDS.mlflow_logging import configure_reward_logging, flush_reward_loggin
 
 
 VALID_LABELS = {"true", "false", "uncertain"}
+
+
+def _log_stage(message: str) -> None:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}", flush=True)
 
 
 def _normalize_label(value: str) -> str:
@@ -201,20 +207,27 @@ def _print_training_summary(cfg: DictConfig, runtime_device: str) -> None:
 
 @hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
 def main(cfg: DictConfig) -> None:
+    _log_stage("Configuring runtime")
     set_seed(int(cfg.trainer.seed))
     runtime_device = _resolve_runtime_device(cfg)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     _configure_terminal_output(cfg)
     _configure_reward_logging(cfg)
 
+    _print_training_summary(cfg, runtime_device)
+
+    _log_stage(f"Loading train dataset: {cfg.dataset.train_path}")
     train_dataset = _prepare_dataset(str(cfg.dataset.train_path))
+    _log_stage(f"Loading validation dataset: {cfg.dataset.validation_path}")
     eval_dataset = _prepare_dataset(str(cfg.dataset.validation_path))
 
     tokenizer_name = cfg.model.tokenizer_name_or_path or cfg.model.model_name_or_path
+    _log_stage(f"Loading tokenizer: {tokenizer_name}")
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
+    _log_stage("Building GRPO config")
     trainer_args_dict = OmegaConf.to_container(cfg.trainer.args, resolve=True)
 
     trainer_args_dict.pop("_target_", None)
@@ -226,6 +239,7 @@ def main(cfg: DictConfig) -> None:
 
     trainer_args = GRPOConfig(**trainer_args_dict)
 
+    _log_stage(f"Initializing GRPOTrainer and loading model: {cfg.model.model_name_or_path}")
     trainer = GRPOTrainer(
         model=str(cfg.model.model_name_or_path),
         reward_funcs=logical_feedback_reward,
@@ -235,10 +249,10 @@ def main(cfg: DictConfig) -> None:
         processing_class=tokenizer,
     )
 
-    _print_training_summary(cfg, runtime_device)
-
     try:
+        _log_stage("Starting trainer.train()")
         trainer.train()
+        _log_stage(f"Saving model to: {cfg.trainer.output_dir}")
         trainer.save_model(str(cfg.trainer.output_dir))
     finally:
         flush_reward_logging()
