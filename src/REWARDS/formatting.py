@@ -23,6 +23,7 @@ INLINE_ROLE_MARKER_PATTERN = re.compile(
     r"\)\s*(?:user|assistant|system)\b",
     flags=re.IGNORECASE,
 )
+UNSUPPORTED_SYMBOL_PATTERN = re.compile(r"(\[|\]|~|↦|∉|∈|⇒|⇔|↔)")
 
 
 def completion_to_text(completion_item) -> str:
@@ -72,8 +73,16 @@ def _trim_role_suffix_from_formula_line(line: str) -> str:
             if depth < 0:
                 return line.strip()
             if depth == 0 and _is_role_marker_suffix(line[index + 1 :]):
-                return line[: index + 1].strip()
+                return _normalize_formula_line(line[: index + 1].strip())
 
+    return _normalize_formula_line(line.strip())
+
+
+def _normalize_formula_line(line: str) -> str:
+    line = re.sub(r"~\s*", "¬", line)
+    line = line.replace("->", "→")
+    line = line.replace("=>", "→")
+    line = line.replace("⇒", "→")
     return line.strip()
 
 
@@ -107,6 +116,16 @@ def _has_role_marker_junk(text: str) -> bool:
         return True
 
     return any(_is_role_marker_line(line) for line in text.splitlines())
+
+
+def _extra_header_count(text: str) -> int:
+    header_count = len(PREMISES_HEADER_PATTERN.findall(text))
+    header_count += len(CONCLUSION_HEADER_PATTERN.findall(text))
+    return max(0, header_count - 2)
+
+
+def _has_unsupported_symbols(text: str) -> bool:
+    return UNSUPPORTED_SYMBOL_PATTERN.search(text) is not None
 
 
 def _nonempty_lines(text: str) -> list[str]:
@@ -143,6 +162,10 @@ def format_reward(text: str) -> float:
 
     if _has_role_marker_junk(text):
         reward -= 0.35
+    if _has_unsupported_symbols(text):
+        reward -= 0.25
+
+    reward -= min(_extra_header_count(text) * 0.10, 0.40)
 
     if PREMISES_HEADER_PATTERN.search(text):
         reward += 0.02
