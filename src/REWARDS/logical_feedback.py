@@ -24,6 +24,8 @@ class RewardBreakdown:
     completion_text: str | None = None
     prover_prediction: str | None = None
     prover_state_status: str | None = None
+    prover_feedback: str | None = None
+    prover_error_message: str | None = None
 
 
 _PRINT_AUTOFORMALIZATIONS = True
@@ -78,6 +80,12 @@ def _print_autoformalizations(breakdowns: list[RewardBreakdown]) -> None:
             f"correctness={breakdown.correctness_reward:.3f} "
             f"status={breakdown.prover_status}"
         )
+        if breakdown.prover_state_status:
+            print(f"prover state: {breakdown.prover_state_status}")
+        if breakdown.prover_feedback:
+            print(f"prover feedback: {_truncate(breakdown.prover_feedback, 400)}")
+        if breakdown.prover_error_message:
+            print(f"prover error: {_truncate(breakdown.prover_error_message, 400)}")
 
         if breakdown.formal_premises is None or breakdown.formal_conclusion is None:
             print("unparsed completion:")
@@ -142,6 +150,8 @@ def score_logical_feedback_breakdown(
         completion_text=text,
         prover_prediction=prover_result.prediction,
         prover_state_status=prover_result.state_status,
+        prover_feedback=prover_result.feedback,
+        prover_error_message=prover_result.error_message,
     )
 
 

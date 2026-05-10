@@ -27,6 +27,8 @@ class ProverReward:
     status: str
     prediction: str | None = None
     state_status: str | None = None
+    feedback: str | None = None
+    error_message: str | None = None
 
 
 @lru_cache(maxsize=1)
@@ -99,16 +101,22 @@ def evaluate_correctness(
 
     try:
         pred, state = solver.predict(problem)
-    except Exception:
-        return ProverReward(reward=-1.0, status="exception")
+    except Exception as exc:
+        return ProverReward(
+            reward=-1.0,
+            status="exception",
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
 
     state_status = str(getattr(state, "status", ""))
+    feedback = str(getattr(state, "feedback", "") or "")
     if state_status.upper() == "PARSE":
         return ProverReward(
             reward=0.0,
             status="parse_error",
             prediction=str(pred),
             state_status=state_status,
+            feedback=feedback,
         )
 
     gold = LABEL_MAP.get(gold_label.lower())
@@ -118,6 +126,7 @@ def evaluate_correctness(
             status="invalid_label",
             prediction=str(pred),
             state_status=state_status,
+            feedback=feedback,
         )
 
     if str(pred).upper() == gold:
@@ -126,6 +135,7 @@ def evaluate_correctness(
             status="correct",
             prediction=str(pred),
             state_status=state_status,
+            feedback=feedback,
         )
 
     if str(pred).upper() == "UNKNOWN":
@@ -134,6 +144,7 @@ def evaluate_correctness(
             status="unknown",
             prediction=str(pred),
             state_status=state_status,
+            feedback=feedback,
         )
 
     return ProverReward(
@@ -141,6 +152,7 @@ def evaluate_correctness(
         status="incorrect",
         prediction=str(pred),
         state_status=state_status,
+        feedback=feedback,
     )
 
 
