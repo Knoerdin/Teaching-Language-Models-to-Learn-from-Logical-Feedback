@@ -32,6 +32,10 @@ INLINE_ROLE_MARKER_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 UNSUPPORTED_SYMBOL_PATTERN = re.compile(r"(\[|\]|~|↦|∉|∈|⇒|⇔|↔)")
+FORMULA_COMMA_PATTERN = re.compile(
+    r"((?:¬\s*)?[A-Za-z][A-Za-z0-9_]*\s*\([^()\n]*\))\s*,\s*"
+    r"((?:¬\s*)?[A-Za-z][A-Za-z0-9_]*\s*\([^()\n]*\))"
+)
 PROMPT_COPY_PATTERN = re.compile(
     r"(Your answer|Return only|No explanation|No truth label|Formula rules|"
     r"Completion format|Translate natural-language)",
@@ -104,6 +108,10 @@ def _normalize_formula_line(line: str) -> str:
     line = line.replace("->", "→")
     line = line.replace("=>", "→")
     line = line.replace("⇒", "→")
+    previous = None
+    while previous != line:
+        previous = line
+        line = FORMULA_COMMA_PATTERN.sub(r"\1 ∧ \2", line)
     return line.strip()
 
 
@@ -151,6 +159,10 @@ def _extra_header_count(text: str) -> int:
 
 def _has_unsupported_symbols(text: str) -> bool:
     return UNSUPPORTED_SYMBOL_PATTERN.search(text) is not None
+
+
+def _has_formula_comma(text: str) -> bool:
+    return FORMULA_COMMA_PATTERN.search(text) is not None
 
 
 def _has_prompt_copy_junk(text: str) -> bool:
@@ -219,6 +231,8 @@ def format_reward(text: str) -> float:
         reward -= 0.35
     if _has_unsupported_symbols(text):
         reward -= 0.25
+    if _has_formula_comma(text):
+        reward -= 0.20
     if _has_prompt_copy_junk(text):
         reward -= 0.75
     if _has_repetition_loop(text):

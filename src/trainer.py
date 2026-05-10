@@ -46,6 +46,7 @@ def _build_prompt(example):
         "Do not write chat-role words such as user, assistant, or system.\n"
         "Predicate, variable, and constant names must use English letters, digits, or underscores.\n"
         "Every line must be a complete formula with balanced parentheses.\n"
+        "Use commas only inside predicate arguments, never between formulas; use ∧ for and.\n"
         "Stop immediately after the conclusion formula.\n\n"
         "Example natural-language premises:\n"
         "All eels are fish.\n"
