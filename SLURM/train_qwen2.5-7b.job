@@ -16,11 +16,18 @@ echo "Submit directory: ${SLURM_SUBMIT_DIR:-unknown}"
 module purge
 module load 2025
 
-PROJECT_DIR="/scratch/${USER}/Teaching-Language-Models-to-Learn-from-Logical-Feedback"
-if [ ! -d "$PROJECT_DIR" ]; then
-  echo "Project directory does not exist: $PROJECT_DIR"
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+if [ -f "$SUBMIT_DIR/pyproject.toml" ]; then
+  PROJECT_DIR="$SUBMIT_DIR"
+elif [ -f "$SUBMIT_DIR/../pyproject.toml" ]; then
+  PROJECT_DIR="$(cd "$SUBMIT_DIR/.." && pwd)"
+else
+  echo "Could not find project directory from submit directory: $SUBMIT_DIR"
+  echo "Submit from the repo root or the SLURM directory."
   exit 1
 fi
+
+echo "Project directory: $PROJECT_DIR"
 cd "$PROJECT_DIR"
 
 if [ -f env/bin/activate ]; then
