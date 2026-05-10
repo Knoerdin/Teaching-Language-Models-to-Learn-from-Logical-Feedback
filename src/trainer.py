@@ -44,6 +44,7 @@ def _build_prompt(example):
         "Operator meanings: ∀ means for all; ∃ means there exists; ¬ means not; "
         "→ means implies; ∧ means and; ∨ means inclusive or; ⊕ means exclusive or.\n"
         "Do not use ↔, ⇔, ⇒, ∴, bullets, markdown, quotes, or extra labels.\n"
+        "Never write chat-role words such as user, assistant, or system.\n"
         "Predicate, variable, and constant names must use English letters, digits, or underscores.\n"
         "Every line must be a complete formula with balanced parentheses.\n"
         "If a sentence is simple, prefer a simple atomic formula such as Cat(luna).\n"
@@ -205,6 +206,50 @@ def _print_training_summary(cfg: DictConfig, runtime_device: str) -> None:
         )
 
 
+def _bad_word_ids(tokenizer: Any, bad_words: list[str]) -> list[list[int]]:
+    token_ids = []
+    seen = set()
+
+    for word in bad_words:
+        ids = tokenizer.encode(word, add_special_tokens=False)
+        if not ids:
+            continue
+        key = tuple(ids)
+        if key in seen:
+            continue
+        token_ids.append(ids)
+        seen.add(key)
+
+    return token_ids
+
+
+def _add_generation_guards(
+    trainer_args_dict: dict[str, Any],
+    tokenizer: Any,
+) -> None:
+    generation_kwargs = dict(trainer_args_dict.get("generation_kwargs") or {})
+    existing_bad_words = list(generation_kwargs.get("bad_words_ids") or [])
+    role_marker_bad_words = _bad_word_ids(
+        tokenizer,
+        [
+            "user",
+            " user",
+            "\nuser",
+            "assistant",
+            " assistant",
+            "\nassistant",
+            "system",
+            " system",
+            "\nsystem",
+        ],
+    )
+
+    if role_marker_bad_words:
+        generation_kwargs["bad_words_ids"] = existing_bad_words + role_marker_bad_words
+
+    trainer_args_dict["generation_kwargs"] = generation_kwargs
+
+
 @hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
 def main(cfg: DictConfig) -> None:
     _log_stage("Configuring runtime")
@@ -231,6 +276,7 @@ def main(cfg: DictConfig) -> None:
     trainer_args_dict = OmegaConf.to_container(cfg.trainer.args, resolve=True)
 
     trainer_args_dict.pop("_target_", None)
+    _add_generation_guards(trainer_args_dict, tokenizer)
 
     trainer_args_dict["output_dir"] = str(cfg.trainer.output_dir)
     trainer_args_dict["run_name"] = str(cfg.experiment.name)

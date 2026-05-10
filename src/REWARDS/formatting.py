@@ -11,6 +11,18 @@ FORMALIZATION_PATTERN = re.compile(
     r"Premises(?:\s+FOL)?:\s*(.*?)\s*Conclusion(?:\s+FOL)?:\s*(.*)",
     flags=re.DOTALL | re.IGNORECASE,
 )
+ROLE_MARKER_LINE_PATTERN = re.compile(
+    r"^\s*(?:user|assistant|system)\s*:?\s*$",
+    flags=re.IGNORECASE,
+)
+ROLE_MARKER_SUFFIX_PATTERN = re.compile(
+    r"^(?:user|assistant|system)(?:\s*(?:user|assistant|system))*\s*:?\s*$",
+    flags=re.IGNORECASE,
+)
+INLINE_ROLE_MARKER_PATTERN = re.compile(
+    r"\)\s*(?:user|assistant|system)\b",
+    flags=re.IGNORECASE,
+)
 
 
 def completion_to_text(completion_item) -> str:
@@ -32,13 +44,69 @@ def extract_formalization(text: str) -> tuple[str | None, str | None]:
     if not match:
         return None, None
 
-    formal_premises = match.group(1).strip()
-    formal_conclusion = match.group(2).strip()
+    formal_premises = _clean_premises_section(match.group(1))
+    formal_conclusion = _clean_conclusion_section(match.group(2))
 
     if not formal_premises or not formal_conclusion:
         return None, None
 
     return formal_premises, formal_conclusion
+
+
+def _is_role_marker_line(line: str) -> bool:
+    return ROLE_MARKER_LINE_PATTERN.fullmatch(line) is not None
+
+
+def _is_role_marker_suffix(text: str) -> bool:
+    return ROLE_MARKER_SUFFIX_PATTERN.fullmatch(text.strip()) is not None
+
+
+def _trim_role_suffix_from_formula_line(line: str) -> str:
+    depth = 0
+
+    for index, character in enumerate(line):
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                return line.strip()
+            if depth == 0 and _is_role_marker_suffix(line[index + 1 :]):
+                return line[: index + 1].strip()
+
+    return line.strip()
+
+
+def _clean_premises_section(text: str) -> str:
+    lines = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _is_role_marker_line(stripped):
+            break
+        lines.append(_trim_role_suffix_from_formula_line(stripped))
+
+    return "\n".join(lines).strip()
+
+
+def _clean_conclusion_section(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _is_role_marker_line(stripped):
+            break
+        return _trim_role_suffix_from_formula_line(stripped)
+
+    return ""
+
+
+def _has_role_marker_junk(text: str) -> bool:
+    if INLINE_ROLE_MARKER_PATTERN.search(text):
+        return True
+
+    return any(_is_role_marker_line(line) for line in text.splitlines())
 
 
 def _nonempty_lines(text: str) -> list[str]:
@@ -72,6 +140,9 @@ def _is_fol_like(line: str) -> bool:
 
 def format_reward(text: str) -> float:
     reward = 0.0
+
+    if _has_role_marker_junk(text):
+        reward -= 0.35
 
     if PREMISES_HEADER_PATTERN.search(text):
         reward += 0.02
