@@ -33,4 +33,23 @@ echo "Waiting for $LOG_FILE"
 echo "Check queue with: squeue -j $JOB_ID"
 echo "Stop watching with Ctrl+C; this will not cancel the job."
 
-tail -F "$LOG_FILE"
+while [ ! -f "$LOG_FILE" ]; do
+  if command -v squeue >/dev/null 2>&1; then
+    QUEUE_STATE="$(squeue -h -j "$JOB_ID" -o "%T %R" 2>/dev/null || true)"
+    if [ -n "$QUEUE_STATE" ]; then
+      echo "Still waiting: $QUEUE_STATE"
+    else
+      echo "Job $JOB_ID is no longer in squeue, but $LOG_FILE was not created."
+      if command -v sacct >/dev/null 2>&1; then
+        sacct -j "$JOB_ID" --format=JobID,JobName,State,Elapsed,ExitCode,Reason%40 || true
+      fi
+      exit 1
+    fi
+  else
+    echo "Log file not created yet."
+  fi
+  sleep 10
+done
+
+echo "Log file created: $LOG_FILE"
+tail -f "$LOG_FILE"
