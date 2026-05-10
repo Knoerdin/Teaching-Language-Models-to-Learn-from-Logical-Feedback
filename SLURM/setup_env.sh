@@ -16,6 +16,19 @@ if [ ! -d ../agent_reasoning_rl ]; then
   exit 1
 fi
 
+if [ ! -f ../agent_reasoning_rl/pyproject.toml ] && [ ! -f ../agent_reasoning_rl/setup.py ]; then
+  echo "../agent_reasoning_rl exists, but it is not the Python project root."
+  echo "Expected one of:"
+  echo "  ../agent_reasoning_rl/pyproject.toml"
+  echo "  ../agent_reasoning_rl/setup.py"
+  echo
+  echo "Project files found below ../agent_reasoning_rl:"
+  find ../agent_reasoning_rl -maxdepth 3 \( -name pyproject.toml -o -name setup.py \) -print | sort
+  echo
+  echo "Move or recopy the directory so pyproject.toml or setup.py is directly inside ../agent_reasoning_rl."
+  exit 1
+fi
+
 if ! command -v uv >/dev/null 2>&1; then
   echo "uv is not on PATH; installing uv into the user environment."
   if command -v python3 >/dev/null 2>&1; then
