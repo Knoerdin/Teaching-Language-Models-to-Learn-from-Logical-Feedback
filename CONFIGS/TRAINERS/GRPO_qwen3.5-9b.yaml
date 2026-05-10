@@ -17,6 +17,21 @@ terminal:
   max_autoformalization_chars: 2000
   show_dataset_progress: false
 
+peft:
+  enabled: true
+  r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  bias: none
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
 trainer_cls:
   _target_: trl.GRPOTrainer
 

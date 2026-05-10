@@ -66,6 +66,7 @@ fi
 
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 echo "Python command: ${PYTHON_RUN[*]}"
 "${PYTHON_RUN[@]}" --version

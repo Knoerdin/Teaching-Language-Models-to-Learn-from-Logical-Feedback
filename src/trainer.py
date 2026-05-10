@@ -319,6 +319,45 @@ def _add_generation_guards(
     trainer_args_dict["generation_kwargs"] = generation_kwargs
 
 
+def _torch_dtype_name(value: Any) -> str | None:
+    text = _optional_str(value)
+    if text is None or text == "auto":
+        return text
+    return text
+
+
+def _add_model_init_kwargs(
+    trainer_args_dict: dict[str, Any],
+    cfg: DictConfig,
+) -> None:
+    model_init_kwargs = dict(trainer_args_dict.get("model_init_kwargs") or {})
+
+    torch_dtype = _torch_dtype_name(cfg.model.get("torch_dtype", None))
+    if torch_dtype:
+        model_init_kwargs.setdefault("torch_dtype", torch_dtype)
+
+    trust_remote_code = cfg.model.get("trust_remote_code", None)
+    if trust_remote_code is not None:
+        model_init_kwargs.setdefault("trust_remote_code", bool(trust_remote_code))
+
+    if model_init_kwargs:
+        trainer_args_dict["model_init_kwargs"] = model_init_kwargs
+
+
+def _build_peft_config(cfg: DictConfig):
+    peft_cfg = cfg.trainer.get("peft", None)
+    if not peft_cfg or not bool(peft_cfg.get("enabled", False)):
+        return None
+
+    from peft import LoraConfig
+
+    peft_kwargs = OmegaConf.to_container(peft_cfg, resolve=True)
+    peft_kwargs.pop("enabled", None)
+    peft_kwargs.setdefault("task_type", "CAUSAL_LM")
+
+    return LoraConfig(**peft_kwargs)
+
+
 @hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
 def main(cfg: DictConfig) -> None:
     _log_stage("Configuring runtime")
@@ -346,6 +385,7 @@ def main(cfg: DictConfig) -> None:
 
     trainer_args_dict.pop("_target_", None)
     _add_generation_guards(trainer_args_dict, tokenizer)
+    _add_model_init_kwargs(trainer_args_dict, cfg)
 
     trainer_args_dict["output_dir"] = str(cfg.trainer.output_dir)
     trainer_args_dict["run_name"] = str(cfg.experiment.name)
@@ -353,6 +393,7 @@ def main(cfg: DictConfig) -> None:
     trainer_args_dict["dataloader_pin_memory"] = (runtime_device == "cuda")
 
     trainer_args = GRPOConfig(**trainer_args_dict)
+    peft_config = _build_peft_config(cfg)
 
     _log_stage(f"Initializing GRPOTrainer and loading model: {cfg.model.model_name_or_path}")
     trainer = GRPOTrainer(
@@ -362,6 +403,7 @@ def main(cfg: DictConfig) -> None:
         train_dataset=train_dataset,
         eval_dataset=eval_dataset,
         processing_class=tokenizer,
+        peft_config=peft_config,
     )
 
     try:
