@@ -155,6 +155,18 @@ def _resolve_mlflow_tracking_uri(mlflow_cfg: DictConfig) -> str:
     return _repo_tracking_uri()
 
 
+def _disable_mlflow_tracing() -> None:
+    os.environ.setdefault("MLFLOW_TRACE_SAMPLING_RATIO", "0.0")
+    os.environ.setdefault("MLFLOW_ENABLE_ASYNC_TRACE_LOGGING", "false")
+
+    try:
+        import mlflow
+
+        mlflow.tracing.disable()
+    except Exception:
+        pass
+
+
 def _default_mlflow_run_name(cfg: DictConfig) -> str:
     configured_name = _optional_str(cfg.trainer.get("mlflow", {}).get("run_name", None))
     if configured_name:
@@ -176,11 +188,15 @@ def _default_mlflow_run_name(cfg: DictConfig) -> str:
 def _configure_reward_logging(cfg: DictConfig):
     mlflow_cfg = cfg.trainer.get("mlflow", {})
     enabled = bool(mlflow_cfg.get("enabled", True))
+    disable_traces = bool(mlflow_cfg.get("disable_traces", True))
     tracking_uri = _resolve_mlflow_tracking_uri(mlflow_cfg)
     artifact_subdir = str(mlflow_cfg.get("artifact_subdir", "reward_plots"))
     plot_every_n_steps = int(mlflow_cfg.get("plot_every_n_steps", 10))
     experiment_name = mlflow_cfg.get("experiment_name", None) or cfg.experiment.name
     run_name = _default_mlflow_run_name(cfg)
+
+    if disable_traces:
+        _disable_mlflow_tracing()
 
     logger = configure_reward_logging(
         enabled=enabled,
@@ -202,11 +218,13 @@ def _configure_reward_logging(cfg: DictConfig):
             "reward_format_metric": "format_reward",
             "reward_parsability_metric": "parsability_reward",
             "reward_correctness_metric": "correctness_reward",
+            "mlflow_disable_traces": disable_traces,
         }
     )
     logger.log_tags(
         {
             "primary_metric": "total_reward",
+            "mlflow_tracing": "disabled" if disable_traces else "enabled",
             "model": cfg.model.get("name", cfg.model.model_name_or_path),
             "trainer_output_dir": cfg.trainer.output_dir,
             "hostname": socket.gethostname(),
@@ -256,6 +274,7 @@ def _print_training_summary(cfg: DictConfig, runtime_device: str) -> None:
     print(
         "  mlflow: "
         f"enabled={mlflow_cfg.get('enabled', True)} "
+        f"traces={'off' if mlflow_cfg.get('disable_traces', True) else 'on'} "
         f"experiment={mlflow_cfg.get('experiment_name', None) or cfg.experiment.name} "
         f"tracking_uri={_resolve_mlflow_tracking_uri(mlflow_cfg)}"
     )

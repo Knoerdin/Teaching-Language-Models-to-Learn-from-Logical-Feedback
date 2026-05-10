@@ -4,6 +4,7 @@ device: auto
 
 mlflow:
   enabled: true
+  disable_traces: true
   tracking_uri: null
   experiment_name: null
   run_name: null

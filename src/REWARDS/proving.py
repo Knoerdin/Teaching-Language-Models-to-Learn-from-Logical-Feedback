@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from functools import lru_cache
+import os
 import warnings
 
 try:
@@ -21,6 +22,18 @@ class SolverUnavailableError(RuntimeError):
     pass
 
 
+def _disable_mlflow_traces() -> None:
+    os.environ.setdefault("MLFLOW_TRACE_SAMPLING_RATIO", "0.0")
+    os.environ.setdefault("MLFLOW_ENABLE_ASYNC_TRACE_LOGGING", "false")
+
+    try:
+        import mlflow
+
+        mlflow.tracing.disable()
+    except Exception:
+        pass
+
+
 @dataclass(frozen=True)
 class ProverReward:
     reward: float
@@ -33,6 +46,8 @@ class ProverReward:
 
 @lru_cache(maxsize=1)
 def _solver_dependencies():
+    _disable_mlflow_traces()
+
     try:
         from agent_reasoning.pipeline import CombinedReasoningProblem
         from agent_reasoning.symbolic_solver import TheoremProverPipeline
