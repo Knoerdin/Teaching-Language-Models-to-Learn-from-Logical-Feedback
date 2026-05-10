@@ -103,6 +103,19 @@ class MLflowRewardLogger:
         }
         self._mlflow.log_params(clean_params)
 
+    def log_tags(self, tags: dict[str, Any]) -> None:
+        if not self.enabled:
+            return
+
+        self._ensure_run()
+        clean_tags = {
+            key: str(value)
+            for key, value in tags.items()
+            if value is not None
+        }
+        if clean_tags:
+            self._mlflow.set_tags(clean_tags)
+
     def log_batch(self, breakdowns: list[RewardBreakdownLike]) -> None:
         if not self.enabled or not breakdowns:
             return
@@ -115,45 +128,69 @@ class MLflowRewardLogger:
         parsability = [breakdown.parsability_reward for breakdown in breakdowns]
         correctness = [breakdown.correctness_reward for breakdown in breakdowns]
 
+        reward_total_mean = _mean(totals)
+        reward_format_mean = _mean(formats)
+        reward_parsability_mean = _mean(parsability)
+        reward_correctness_mean = _mean(correctness)
+        parse_success_rate = _rate([breakdown.parsed for breakdown in breakdowns])
+        prover_attempt_rate = _rate(
+            [breakdown.prover_attempted for breakdown in breakdowns]
+        )
+        prover_correct_rate = _status_rate(
+            breakdowns,
+            "correct",
+            attempted_only=True,
+        )
+        prover_incorrect_rate = _status_rate(
+            breakdowns,
+            "incorrect",
+            attempted_only=True,
+        )
+        prover_unknown_rate = _status_rate(
+            breakdowns,
+            "unknown",
+            attempted_only=True,
+        )
+        prover_parse_error_rate = _status_rate(
+            breakdowns,
+            "parse_error",
+            attempted_only=True,
+        )
+        prover_exception_rate = _status_rate(
+            breakdowns,
+            "exception",
+            attempted_only=True,
+        )
+        not_parsed_rate = _status_rate(breakdowns, "not_parsed")
+
         metrics = {
+            # Top-level aliases make MLflow's run tables easier to scan.
+            "total_reward": reward_total_mean,
+            "format_reward": reward_format_mean,
+            "parsability_reward": reward_parsability_mean,
+            "correctness_reward": reward_correctness_mean,
+            "parse_success_rate": parse_success_rate,
+            "prover_correct_rate": prover_correct_rate,
+            "prover_unknown_rate": prover_unknown_rate,
+            "prover_parse_error_rate": prover_parse_error_rate,
+            "prover_exception_rate": prover_exception_rate,
+            "not_parsed_rate": not_parsed_rate,
+            # Namespaced metrics preserve the existing reward dashboard.
             "reward/total_mean": _mean(totals),
             "reward/total_min": min(totals),
             "reward/total_max": max(totals),
             "reward/total_std": float(pstdev(totals)) if len(totals) > 1 else 0.0,
-            "reward/format_mean": _mean(formats),
-            "reward/parsability_mean": _mean(parsability),
-            "reward/correctness_mean": _mean(correctness),
-            "reward/parse_success_rate": _rate(
-                [breakdown.parsed for breakdown in breakdowns]
-            ),
-            "reward/prover_attempt_rate": _rate(
-                [breakdown.prover_attempted for breakdown in breakdowns]
-            ),
-            "reward/prover_correct_rate": _status_rate(
-                breakdowns,
-                "correct",
-                attempted_only=True,
-            ),
-            "reward/prover_incorrect_rate": _status_rate(
-                breakdowns,
-                "incorrect",
-                attempted_only=True,
-            ),
-            "reward/prover_unknown_rate": _status_rate(
-                breakdowns,
-                "unknown",
-                attempted_only=True,
-            ),
-            "reward/prover_parse_error_rate": _status_rate(
-                breakdowns,
-                "parse_error",
-                attempted_only=True,
-            ),
-            "reward/prover_exception_rate": _status_rate(
-                breakdowns,
-                "exception",
-                attempted_only=True,
-            ),
+            "reward/format_mean": reward_format_mean,
+            "reward/parsability_mean": reward_parsability_mean,
+            "reward/correctness_mean": reward_correctness_mean,
+            "reward/parse_success_rate": parse_success_rate,
+            "reward/prover_attempt_rate": prover_attempt_rate,
+            "reward/prover_correct_rate": prover_correct_rate,
+            "reward/prover_incorrect_rate": prover_incorrect_rate,
+            "reward/prover_unknown_rate": prover_unknown_rate,
+            "reward/prover_parse_error_rate": prover_parse_error_rate,
+            "reward/prover_exception_rate": prover_exception_rate,
+            "reward/not_parsed_rate": not_parsed_rate,
             "reward/batch_size": float(len(breakdowns)),
         }
 

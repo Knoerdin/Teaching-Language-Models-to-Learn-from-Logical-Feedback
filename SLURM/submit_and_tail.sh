@@ -2,16 +2,22 @@
 
 set -euo pipefail
 
-if [ "$#" -ne 1 ]; then
-  echo "Usage: $0 <job-file>"
+if [ "$#" -lt 1 ]; then
+  echo "Usage: $0 [sbatch-options...] <job-file>"
   echo "Example: $0 train_qwen2.5-3b_test.job"
+  echo "Example: $0 --gpus=2 --mem=240G train_qwen3.5-9b.job"
   exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-JOB_FILE="$(basename "$1")"
+JOB_FILE="$(basename "${@: -1}")"
+SBATCH_ARGS=()
+if [ "$#" -gt 1 ]; then
+  SBATCH_ARGS=("${@:1:$#-1}")
+fi
+
 if [ ! -f "$JOB_FILE" ]; then
   echo "Job file not found in $SCRIPT_DIR: $JOB_FILE"
   exit 1
@@ -19,7 +25,7 @@ fi
 
 mkdir -p logs
 
-SUBMIT_OUTPUT="$(sbatch "$JOB_FILE")"
+SUBMIT_OUTPUT="$(sbatch "${SBATCH_ARGS[@]}" "$JOB_FILE")"
 echo "$SUBMIT_OUTPUT"
 
 JOB_ID="$(awk '/Submitted batch job/ {print $4}' <<< "$SUBMIT_OUTPUT")"

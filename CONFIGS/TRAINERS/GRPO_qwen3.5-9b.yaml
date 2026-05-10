@@ -1,0 +1,33 @@
+output_dir: outputs/grpo_qwen3.5-9b
+seed: 42
+device: auto
+
+mlflow:
+  enabled: true
+  tracking_uri: null
+  experiment_name: null
+  run_name: null
+  artifact_subdir: reward_plots
+  plot_every_n_steps: 10
+
+terminal:
+  print_autoformalizations: true
+  print_autoformalizations_every_n_steps: 10
+  max_autoformalizations: 1
+  max_autoformalization_chars: 2000
+  show_dataset_progress: false
+
+trainer_cls:
+  _target_: trl.GRPOTrainer
+
+args:
+  _target_: trl.GRPOConfig
+  learning_rate: 1.0e-6
+  per_device_train_batch_size: 1
+  generation_batch_size: 4
+  num_generations: 4
+  max_completion_length: 192
+  repetition_penalty: 1.1
+  max_steps: 500
+  logging_steps: 10
+  report_to: none

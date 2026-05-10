@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -8,6 +9,7 @@ from typing import Any
 import hydra
 import torch
 from datasets import Dataset, disable_progress_bar, enable_progress_bar, load_dataset
+from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 from transformers import AutoTokenizer, logging as transformers_logging, set_seed
 from trl import GRPOConfig, GRPOTrainer
@@ -128,14 +130,57 @@ def _resolve_runtime_device(cfg: DictConfig) -> str:
     return "cpu"
 
 
+def _optional_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    if text.lower() in {"", "none", "null"}:
+        return None
+    return text
+
+
+def _repo_tracking_uri() -> str:
+    return (Path(get_original_cwd()) / "mlruns").resolve().as_uri()
+
+
+def _resolve_mlflow_tracking_uri(mlflow_cfg: DictConfig) -> str:
+    configured_uri = _optional_str(mlflow_cfg.get("tracking_uri", None))
+    if configured_uri:
+        return configured_uri
+
+    env_uri = _optional_str(os.environ.get("MLFLOW_TRACKING_URI"))
+    if env_uri:
+        return env_uri
+
+    return _repo_tracking_uri()
+
+
+def _default_mlflow_run_name(cfg: DictConfig) -> str:
+    configured_name = _optional_str(cfg.trainer.get("mlflow", {}).get("run_name", None))
+    if configured_name:
+        return configured_name
+
+    parts = [
+        str(cfg.model.get("name", cfg.model.model_name_or_path)),
+        Path(str(cfg.trainer.output_dir)).name,
+    ]
+    slurm_job_id = _optional_str(os.environ.get("SLURM_JOB_ID"))
+    if slurm_job_id:
+        parts.append(f"slurm-{slurm_job_id}")
+    else:
+        parts.append(datetime.now().strftime("%Y%m%d-%H%M%S"))
+
+    return "-".join(part for part in parts if part)
+
+
 def _configure_reward_logging(cfg: DictConfig):
     mlflow_cfg = cfg.trainer.get("mlflow", {})
     enabled = bool(mlflow_cfg.get("enabled", True))
-    tracking_uri = mlflow_cfg.get("tracking_uri", None)
+    tracking_uri = _resolve_mlflow_tracking_uri(mlflow_cfg)
     artifact_subdir = str(mlflow_cfg.get("artifact_subdir", "reward_plots"))
     plot_every_n_steps = int(mlflow_cfg.get("plot_every_n_steps", 10))
     experiment_name = mlflow_cfg.get("experiment_name", None) or cfg.experiment.name
-    run_name = mlflow_cfg.get("run_name", None) or cfg.experiment.name
+    run_name = _default_mlflow_run_name(cfg)
 
     logger = configure_reward_logging(
         enabled=enabled,
@@ -152,6 +197,22 @@ def _configure_reward_logging(cfg: DictConfig):
             "trainer_device": cfg.trainer.get("device", "auto"),
             "dataset_train_path": cfg.dataset.train_path,
             "dataset_validation_path": cfg.dataset.validation_path,
+            "reward_primary_metric": "total_reward",
+            "reward_total_metric": "total_reward",
+            "reward_format_metric": "format_reward",
+            "reward_parsability_metric": "parsability_reward",
+            "reward_correctness_metric": "correctness_reward",
+        }
+    )
+    logger.log_tags(
+        {
+            "primary_metric": "total_reward",
+            "model": cfg.model.get("name", cfg.model.model_name_or_path),
+            "trainer_output_dir": cfg.trainer.output_dir,
+            "hostname": socket.gethostname(),
+            "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+            "slurm_job_name": os.environ.get("SLURM_JOB_NAME"),
+            "slurm_partition": os.environ.get("SLURM_JOB_PARTITION"),
         }
     )
 
@@ -195,7 +256,8 @@ def _print_training_summary(cfg: DictConfig, runtime_device: str) -> None:
     print(
         "  mlflow: "
         f"enabled={mlflow_cfg.get('enabled', True)} "
-        f"experiment={mlflow_cfg.get('experiment_name', None) or cfg.experiment.name}"
+        f"experiment={mlflow_cfg.get('experiment_name', None) or cfg.experiment.name} "
+        f"tracking_uri={_resolve_mlflow_tracking_uri(mlflow_cfg)}"
     )
     if terminal_cfg.get("print_autoformalizations", True):
         print(
