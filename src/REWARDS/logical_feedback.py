@@ -5,9 +5,9 @@ from typing import Any
 
 from .formatting import completion_to_text, extract_formalization, format_reward
 from .mlflow_logging import log_reward_batch
+from .parsing import parsability_reward
 
-UNPARSEABLE_PARSABILITY_REWARD = -2.0
-UNPARSEABLE_STATUSES = {"parse_error", "exception"}
+UNPARSEABLE_STATUSES = {"parse_error"}
 
 
 @dataclass(frozen=True)
@@ -82,7 +82,10 @@ def _print_autoformalizations(breakdowns: list[RewardBreakdown]) -> None:
         )
         if breakdown.prover_state_status:
             print(f"prover state: {breakdown.prover_state_status}")
-        if breakdown.prover_feedback:
+        if breakdown.prover_feedback and breakdown.prover_status in {
+            "parse_error",
+            "exception",
+        }:
             print(f"prover feedback: {_truncate(breakdown.prover_feedback, 400)}")
         if breakdown.prover_error_message:
             print(f"prover error: {_truncate(breakdown.prover_error_message, 400)}")
@@ -98,6 +101,23 @@ def _print_autoformalizations(breakdowns: list[RewardBreakdown]) -> None:
         print(_truncate(breakdown.formal_conclusion, _PRINT_MAX_CHARS))
 
 
+def _has_parser_warning(prover_result: Any) -> bool:
+    diagnostic_text = "\n".join(
+        str(value or "")
+        for value in (
+            getattr(prover_result, "feedback", None),
+            getattr(prover_result, "error_message", None),
+        )
+    ).lower()
+    warning_markers = (
+        "token recognition error",
+        "extraneous input",
+        "mismatched input",
+        "no viable alternative",
+    )
+    return any(marker in diagnostic_text for marker in warning_markers)
+
+
 def score_logical_feedback_breakdown(
     text: str,
     *,
@@ -109,7 +129,11 @@ def score_logical_feedback_breakdown(
     formal_premises, formal_conclusion = extract_formalization(text)
 
     if formal_premises is None or formal_conclusion is None:
-        parsability_score = UNPARSEABLE_PARSABILITY_REWARD
+        parsability_score = parsability_reward(
+            text,
+            formal_premises=formal_premises,
+            formal_conclusion=formal_conclusion,
+        )
         return RewardBreakdown(
             total_reward=formatting_score + parsability_score,
             format_reward=formatting_score,
@@ -131,9 +155,21 @@ def score_logical_feedback_breakdown(
         gold_label=gold_label,
     )
     correctness_score = prover_result.reward
-    parsability_score = 0.0
+    solver_parsed = (
+        prover_result.status not in UNPARSEABLE_STATUSES
+        and prover_result.status != "exception"
+    )
+    cleanly_parsed = solver_parsed and not _has_parser_warning(prover_result)
+    parsability_score = parsability_reward(
+        text,
+        formal_premises=formal_premises,
+        formal_conclusion=formal_conclusion,
+        solver_parsed=cleanly_parsed,
+        solver_exception=prover_result.status == "exception",
+    )
     if prover_result.status in UNPARSEABLE_STATUSES:
-        parsability_score = UNPARSEABLE_PARSABILITY_REWARD
+        correctness_score = 0.0
+    elif prover_result.status == "exception":
         correctness_score = 0.0
     total_reward = formatting_score + parsability_score + correctness_score
 
@@ -142,7 +178,7 @@ def score_logical_feedback_breakdown(
         format_reward=formatting_score,
         parsability_reward=parsability_score,
         correctness_reward=correctness_score,
-        parsed=True,
+        parsed=cleanly_parsed,
         prover_attempted=True,
         prover_status=prover_result.status,
         formal_premises=formal_premises,

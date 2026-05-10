@@ -31,7 +31,10 @@ INLINE_ROLE_MARKER_PATTERN = re.compile(
     r"\)\s*(?:user|assistant|system)\b",
     flags=re.IGNORECASE,
 )
-UNSUPPORTED_SYMBOL_PATTERN = re.compile(r"(\[|\]|~|↦|∉|∈|⇒|⇔|↔)")
+UNSUPPORTED_SYMBOL_PATTERN = re.compile(
+    r"(\[|\]|~|↦|∉|∈|⇒|⇔|↔|\.|;|\\|<|(?<!-)>|\^|&|\||=|\+|"
+    r"(?<!<)-(?!>)|،)"
+)
 FORMULA_COMMA_PATTERN = re.compile(
     r"((?:¬\s*)?[A-Za-z][A-Za-z0-9_]*\s*\([^()\n]*\))\s*,\s*"
     r"((?:¬\s*)?[A-Za-z][A-Za-z0-9_]*\s*\([^()\n]*\))"

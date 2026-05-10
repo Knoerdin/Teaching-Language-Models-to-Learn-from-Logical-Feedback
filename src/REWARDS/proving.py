@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from functools import lru_cache
+import io
 import os
 import warnings
+from contextlib import redirect_stderr, redirect_stdout
 
 try:
     from langchain_core._api.deprecation import LangChainPendingDeprecationWarning
@@ -114,17 +116,27 @@ def evaluate_correctness(
         formal_conclusion=formal_conclusion,
     )
 
+    captured_stdout = io.StringIO()
+    captured_stderr = io.StringIO()
     try:
-        pred, state = solver.predict(problem)
+        with redirect_stdout(captured_stdout), redirect_stderr(captured_stderr):
+            pred, state = solver.predict(problem)
     except Exception as exc:
+        captured_output = _captured_solver_output(captured_stdout, captured_stderr)
+        error_message = f"{type(exc).__name__}: {exc}"
+        if captured_output:
+            error_message = f"{error_message}\n{captured_output}"
         return ProverReward(
             reward=-1.0,
             status="exception",
-            error_message=f"{type(exc).__name__}: {exc}",
+            error_message=error_message,
         )
 
     state_status = str(getattr(state, "status", ""))
     feedback = str(getattr(state, "feedback", "") or "")
+    captured_output = _captured_solver_output(captured_stdout, captured_stderr)
+    if captured_output and not feedback:
+        feedback = captured_output
     if state_status.upper() == "PARSE":
         return ProverReward(
             reward=0.0,
@@ -185,3 +197,14 @@ def correctness_reward(
         formal_conclusion=formal_conclusion,
         gold_label=gold_label,
     ).reward
+
+
+def _captured_solver_output(
+    stdout_buffer: io.StringIO,
+    stderr_buffer: io.StringIO,
+) -> str:
+    captured_parts = [
+        stdout_buffer.getvalue().strip(),
+        stderr_buffer.getvalue().strip(),
+    ]
+    return "\n".join(part for part in captured_parts if part)
