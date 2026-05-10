@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any
 
 from .formatting import completion_to_text, extract_formalization, format_reward
@@ -61,44 +62,79 @@ def _truncate(text: str, max_chars: int) -> str:
     return f"{text[:max_chars].rstrip()}\n... [truncated]"
 
 
+def _is_main_process() -> bool:
+    rank = os.environ.get("RANK")
+    return rank in (None, "", "0")
+
+
+def _mean_reward(breakdowns: list[RewardBreakdown]) -> float:
+    return sum(breakdown.total_reward for breakdown in breakdowns) / len(breakdowns)
+
+
 def _print_autoformalizations(breakdowns: list[RewardBreakdown]) -> None:
     global _PRINT_STEP
 
-    if not _PRINT_AUTOFORMALIZATIONS or not breakdowns:
+    if not _PRINT_AUTOFORMALIZATIONS or not breakdowns or not _is_main_process():
         return
 
     _PRINT_STEP += 1
     if _PRINT_STEP % _PRINT_EVERY_N_STEPS != 0:
         return
 
-    print(f"\n[reward batch {_PRINT_STEP}] model autoformalization sample")
-    for index, breakdown in enumerate(breakdowns[:_PRINT_MAX_EXAMPLES], start=1):
-        print(
-            f"sample {index}: total={breakdown.total_reward:.3f} "
-            f"format={breakdown.format_reward:.3f} "
-            f"parsability={breakdown.parsability_reward:.3f} "
-            f"correctness={breakdown.correctness_reward:.3f} "
-            f"status={breakdown.prover_status}"
-        )
-        if breakdown.prover_state_status:
-            print(f"prover state: {breakdown.prover_state_status}")
-        if breakdown.prover_feedback and breakdown.prover_status in {
-            "parse_error",
-            "exception",
-        }:
-            print(f"prover feedback: {_truncate(breakdown.prover_feedback, 400)}")
-        if breakdown.prover_error_message:
-            print(f"prover error: {_truncate(breakdown.prover_error_message, 400)}")
+    sorted_breakdowns = sorted(
+        enumerate(breakdowns, start=1),
+        key=lambda indexed: indexed[1].total_reward,
+        reverse=True,
+    )
+    best_reward = sorted_breakdowns[0][1].total_reward
+    worst_reward = sorted_breakdowns[-1][1].total_reward
+    print(f"\n[reward batch {_PRINT_STEP}] best local autoformalization sample")
+    print(
+        "reward range: "
+        f"best={best_reward:.3f} "
+        f"mean={_mean_reward(breakdowns):.3f} "
+        f"worst={worst_reward:.3f}"
+    )
 
-        if breakdown.formal_premises is None or breakdown.formal_conclusion is None:
-            print("unparsed completion:")
-            print(_truncate(breakdown.completion_text or "", _PRINT_MAX_CHARS))
-            continue
+    for display_index, (batch_index, breakdown) in enumerate(
+        sorted_breakdowns[:_PRINT_MAX_EXAMPLES],
+        start=1,
+    ):
+        _print_breakdown(display_index, batch_index, breakdown)
 
-        print("Premises:")
-        print(_truncate(breakdown.formal_premises, _PRINT_MAX_CHARS))
-        print("Conclusion:")
-        print(_truncate(breakdown.formal_conclusion, _PRINT_MAX_CHARS))
+
+def _print_breakdown(
+    display_index: int,
+    batch_index: int,
+    breakdown: RewardBreakdown,
+) -> None:
+    print(
+        f"best sample {display_index} (batch item {batch_index}): "
+        f"total={breakdown.total_reward:.3f} "
+        f"format={breakdown.format_reward:.3f} "
+        f"parsability={breakdown.parsability_reward:.3f} "
+        f"correctness={breakdown.correctness_reward:.3f} "
+        f"status={breakdown.prover_status}"
+    )
+    if breakdown.prover_state_status:
+        print(f"prover state: {breakdown.prover_state_status}")
+    if breakdown.prover_feedback and breakdown.prover_status in {
+        "parse_error",
+        "exception",
+    }:
+        print(f"prover feedback: {_truncate(breakdown.prover_feedback, 400)}")
+    if breakdown.prover_error_message:
+        print(f"prover error: {_truncate(breakdown.prover_error_message, 400)}")
+
+    if breakdown.formal_premises is None or breakdown.formal_conclusion is None:
+        print("unparsed completion:")
+        print(_truncate(breakdown.completion_text or "", _PRINT_MAX_CHARS))
+        return
+
+    print("Premises:")
+    print(_truncate(breakdown.formal_premises, _PRINT_MAX_CHARS))
+    print("Conclusion:")
+    print(_truncate(breakdown.formal_conclusion, _PRINT_MAX_CHARS))
 
 
 def _has_parser_warning(prover_result: Any) -> bool:
