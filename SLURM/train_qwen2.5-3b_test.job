@@ -30,27 +30,36 @@ fi
 echo "Project directory: $PROJECT_DIR"
 cd "$PROJECT_DIR"
 
+export PATH="$HOME/.local/bin:$PATH"
+PYTHON_RUN=(python -u)
 if [ -f env/bin/activate ]; then
+  echo "Using virtual environment: env"
   source env/bin/activate
 elif [ -f .venv/bin/activate ]; then
+  echo "Using virtual environment: .venv"
   source .venv/bin/activate
+elif command -v uv >/dev/null 2>&1; then
+  echo "Using uv: $(command -v uv)"
+  uv --version
+  PYTHON_RUN=(uv run --frozen python -u)
 else
-  echo "No virtual environment found at env/bin/activate or .venv/bin/activate"
+  echo "No virtual environment found at env/bin/activate or .venv/bin/activate, and uv is not on PATH."
+  echo "From the project directory, create an environment with: uv sync --frozen"
   exit 1
 fi
 
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 
-echo "Python: $(command -v python)"
-python --version
+echo "Python command: ${PYTHON_RUN[*]}"
+"${PYTHON_RUN[@]}" --version
 
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 nvidia-smi
 free -h
 
 echo "[$(date)] Launching training"
-python -u src/trainer.py \
+"${PYTHON_RUN[@]}" src/trainer.py \
   TRAINERS@trainer=tests/GRPO_qwen2.5-3b_test \
   MODELS@model=tests/qwen2.5-3b_test
 echo "[$(date)] Training finished"
