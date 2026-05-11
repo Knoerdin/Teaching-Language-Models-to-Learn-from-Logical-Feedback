@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import os
+import random
 import socket
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+os.environ.setdefault("USE_TF", "0")
+os.environ.setdefault("USE_FLAX", "0")
+os.environ.setdefault("USE_JAX", "0")
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ.setdefault("TRANSFORMERS_NO_FLAX", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 
 def _bootstrap_log(message: str) -> None:
@@ -22,7 +31,7 @@ from datasets import Dataset, disable_progress_bar, enable_progress_bar, load_da
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 _bootstrap_log("Importing transformers")
-from transformers import AutoTokenizer, logging as transformers_logging, set_seed
+from transformers import AutoTokenizer, logging as transformers_logging
 _bootstrap_log("Importing TRL")
 from trl import GRPOConfig, GRPOTrainer
 
@@ -42,6 +51,20 @@ def _log_stage(message: str) -> None:
 
 def _normalize_label(value: str) -> str:
     return value.strip().lower()
+
+
+def _set_seed(seed: int) -> None:
+    random.seed(seed)
+    try:
+        import numpy as np
+
+        np.random.seed(seed)
+    except Exception:
+        pass
+
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def _build_prompt(example):
@@ -393,7 +416,7 @@ def _build_peft_config(cfg: DictConfig):
 @hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
 def main(cfg: DictConfig) -> None:
     _log_stage("Configuring runtime")
-    set_seed(int(cfg.trainer.seed))
+    _set_seed(int(cfg.trainer.seed))
     runtime_device = _resolve_runtime_device(cfg)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
     _configure_terminal_output(cfg)
