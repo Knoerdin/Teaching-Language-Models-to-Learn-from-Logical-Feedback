@@ -6,25 +6,38 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+
+def _bootstrap_log(message: str) -> None:
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}", flush=True)
+
+
+_bootstrap_log("Starting trainer process")
+_bootstrap_log("Importing hydra")
 import hydra
+_bootstrap_log("Importing torch")
 import torch
+_bootstrap_log("Importing datasets")
 from datasets import Dataset, disable_progress_bar, enable_progress_bar, load_dataset
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
+_bootstrap_log("Importing transformers")
 from transformers import AutoTokenizer, logging as transformers_logging, set_seed
+_bootstrap_log("Importing TRL")
 from trl import GRPOConfig, GRPOTrainer
 
+_bootstrap_log("Importing reward modules")
 from REWARDS.logical_feedback import configure_reward_console
 from REWARDS.logical_feedback import logical_feedback_reward
 from REWARDS.mlflow_logging import configure_reward_logging, flush_reward_logging
+_bootstrap_log("Finished trainer imports")
 
 
 VALID_LABELS = {"true", "false", "uncertain"}
 
 
 def _log_stage(message: str) -> None:
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}", flush=True)
+    _bootstrap_log(message)
 
 
 def _normalize_label(value: str) -> str:
