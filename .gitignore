@@ -22,6 +22,7 @@ data/*
 !data/wikidata_topics.csv
 !data/Prompt_Examples
 outputs
+SLURM/logs
 src/outputs
 mlruns
 src/agent_reasoning/symbolic_solver/fol/antlr/*

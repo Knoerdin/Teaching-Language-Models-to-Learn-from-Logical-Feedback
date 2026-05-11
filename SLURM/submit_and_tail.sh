@@ -23,9 +23,58 @@ if [ ! -f "$JOB_FILE" ]; then
   exit 1
 fi
 
-mkdir -p logs
+sanitize_path_part() {
+  tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/[^a-z0-9._-]+/_/g; s/^_+//; s/_+$//'
+}
 
-SUBMIT_OUTPUT="$(sbatch "${SBATCH_ARGS[@]}" "$JOB_FILE")"
+read_sbatch_value() {
+  local key="$1"
+  local value=""
+
+  value="$(sed -nE "s/^#SBATCH[[:space:]]+--${key}=([^[:space:]]+).*/\\1/p" "$JOB_FILE" | head -n 1)"
+  if [ -n "$value" ]; then
+    printf '%s\n' "$value"
+    return
+  fi
+
+  sed -nE "s/^#SBATCH[[:space:]]+--${key}[[:space:]]+([^[:space:]]+).*/\\1/p" "$JOB_FILE" | head -n 1
+}
+
+override_value() {
+  local key="$1"
+  local value="$2"
+  local index=0
+
+  while [ "$index" -lt "${#SBATCH_ARGS[@]}" ]; do
+    local arg="${SBATCH_ARGS[$index]}"
+    if [[ "$arg" == "--${key}="* ]]; then
+      value="${arg#*=}"
+    elif [[ "$arg" == "--${key}" ]] && [ "$((index + 1))" -lt "${#SBATCH_ARGS[@]}" ]; then
+      value="${SBATCH_ARGS[$((index + 1))]}"
+    fi
+    index=$((index + 1))
+  done
+
+  printf '%s\n' "$value"
+}
+
+JOB_NAME="$(override_value "job-name" "$(read_sbatch_value "job-name")")"
+if [ -z "$JOB_NAME" ]; then
+  JOB_NAME="${JOB_FILE%.job}"
+fi
+
+GPUS="$(override_value "gpus" "$(read_sbatch_value "gpus")")"
+CPUS="$(override_value "cpus-per-task" "$(read_sbatch_value "cpus-per-task")")"
+MEMORY="$(override_value "mem" "$(read_sbatch_value "mem")")"
+
+JOB_LABEL="$(printf '%s' "$JOB_NAME" | sanitize_path_part)"
+PARAM_LABEL="gpus${GPUS:-unknown}_cpus${CPUS:-unknown}_mem${MEMORY:-unknown}"
+PARAM_LABEL="$(printf '%s' "$PARAM_LABEL" | sanitize_path_part)"
+LOG_DIR="logs/$JOB_LABEL/$PARAM_LABEL"
+mkdir -p "$LOG_DIR"
+
+SUBMIT_OUTPUT="$(sbatch "${SBATCH_ARGS[@]}" --output="$LOG_DIR/job_%j.out" --error="$LOG_DIR/job_%j.out" "$JOB_FILE")"
 echo "$SUBMIT_OUTPUT"
 
 JOB_ID="$(awk '/Submitted batch job/ {print $4}' <<< "$SUBMIT_OUTPUT")"
@@ -34,7 +83,8 @@ if [ -z "$JOB_ID" ]; then
   exit 1
 fi
 
-LOG_FILE="logs/job_${JOB_ID}.out"
+LOG_FILE="$LOG_DIR/job_${JOB_ID}.out"
+echo "Logs grouped under: $LOG_DIR"
 echo "Waiting for $LOG_FILE"
 echo "Check queue with: squeue -j $JOB_ID"
 echo "Stop watching with Ctrl+C; this will not cancel the job."
