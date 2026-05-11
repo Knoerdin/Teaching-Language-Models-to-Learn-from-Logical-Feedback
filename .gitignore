@@ -23,6 +23,7 @@ data/*
 !data/Prompt_Examples
 outputs
 SLURM/logs
+SLURM/log_summaries
 src/outputs
 mlruns
 src/agent_reasoning/symbolic_solver/fol/antlr/*

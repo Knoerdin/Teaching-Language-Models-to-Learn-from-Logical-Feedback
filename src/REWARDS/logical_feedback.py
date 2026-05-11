@@ -78,9 +78,6 @@ def _print_autoformalizations(breakdowns: list[RewardBreakdown]) -> None:
         return
 
     _PRINT_STEP += 1
-    if _PRINT_STEP % _PRINT_EVERY_N_STEPS != 0:
-        return
-
     sorted_breakdowns = sorted(
         enumerate(breakdowns, start=1),
         key=lambda indexed: indexed[1].total_reward,
@@ -88,13 +85,18 @@ def _print_autoformalizations(breakdowns: list[RewardBreakdown]) -> None:
     )
     best_reward = sorted_breakdowns[0][1].total_reward
     worst_reward = sorted_breakdowns[-1][1].total_reward
-    print(f"\n[reward batch {_PRINT_STEP}] best local autoformalization sample")
-    print(
-        "reward range: "
+
+    range_line = (
         f"best={best_reward:.3f} "
         f"mean={_mean_reward(breakdowns):.3f} "
         f"worst={worst_reward:.3f}"
     )
+    if _PRINT_STEP % _PRINT_EVERY_N_STEPS != 0:
+        print(f"[reward batch {_PRINT_STEP}] reward range: {range_line}")
+        return
+
+    print(f"\n[reward batch {_PRINT_STEP}] best local autoformalization sample")
+    print(f"reward range: {range_line}")
 
     for display_index, (batch_index, breakdown) in enumerate(
         sorted_breakdowns[:_PRINT_MAX_EXAMPLES],

@@ -48,6 +48,16 @@ else
   exit 1
 fi
 
+summarize_logs_on_exit() {
+  local exit_code=$?
+  trap - EXIT
+  set +e
+  echo "[$(date)] Updating SLURM log summaries"
+  "${PYTHON_RUN[@]}" SLURM/summarize_logs.py --logs SLURM/logs --out SLURM/log_summaries
+  exit "$exit_code"
+}
+trap summarize_logs_on_exit EXIT
+
 export PYTHONUNBUFFERED=1
 export HYDRA_FULL_ERROR=1
 export MLFLOW_TRACE_SAMPLING_RATIO="${MLFLOW_TRACE_SAMPLING_RATIO:-0.0}"
