@@ -1,0 +1,77 @@
+#!/bin/bash
+#SBATCH --job-name=grpo_qwen35_4b_8gen_test
+#SBATCH --output=logs/job_%j.out
+#SBATCH --error=logs/job_%j.out
+#SBATCH --time=08:00:00
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=100G
+
+set -euo pipefail
+
+echo "[$(date)] Starting ${SLURM_JOB_NAME:-job} ${SLURM_JOB_ID:-unknown} on $(hostname)"
+echo "Submit directory: ${SLURM_SUBMIT_DIR:-unknown}"
+
+module purge
+module load 2025
+
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+if [ -f "$SUBMIT_DIR/pyproject.toml" ]; then
+  PROJECT_DIR="$SUBMIT_DIR"
+elif [ -f "$SUBMIT_DIR/../pyproject.toml" ]; then
+  PROJECT_DIR="$(cd "$SUBMIT_DIR/.." && pwd)"
+else
+  echo "Could not find project directory from submit directory: $SUBMIT_DIR"
+  echo "Submit from the repo root or the SLURM directory."
+  exit 1
+fi
+
+echo "Project directory: $PROJECT_DIR"
+cd "$PROJECT_DIR"
+
+export PATH="$HOME/.local/bin:$PATH"
+PYTHON_RUN=(python -u)
+if [ -f env/bin/activate ]; then
+  echo "Using virtual environment: env"
+  source env/bin/activate
+elif [ -f .venv/bin/activate ]; then
+  echo "Using virtual environment: .venv"
+  source .venv/bin/activate
+elif command -v uv >/dev/null 2>&1; then
+  echo "Using uv: $(command -v uv)"
+  uv --version
+  PYTHON_RUN=(uv run --frozen python -u)
+else
+  echo "No virtual environment found at env/bin/activate or .venv/bin/activate, and uv is not on PATH."
+  echo "From the project directory, create an environment with: uv sync --frozen"
+  exit 1
+fi
+
+summarize_logs_on_exit() {
+  local exit_code=$?
+  trap - EXIT
+  set +e
+  echo "[$(date)] Updating SLURM log summaries"
+  "${PYTHON_RUN[@]}" SLURM/summarize_logs.py --logs SLURM/logs --out SLURM/log_summaries
+  exit "$exit_code"
+}
+trap summarize_logs_on_exit EXIT
+
+export PYTHONUNBUFFERED=1
+export HYDRA_FULL_ERROR=1
+export MLFLOW_TRACE_SAMPLING_RATIO="${MLFLOW_TRACE_SAMPLING_RATIO:-0.0}"
+export MLFLOW_ENABLE_ASYNC_TRACE_LOGGING="${MLFLOW_ENABLE_ASYNC_TRACE_LOGGING:-false}"
+
+echo "Python command: ${PYTHON_RUN[*]}"
+"${PYTHON_RUN[@]}" --version
+
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+nvidia-smi
+free -h
+
+echo "[$(date)] Launching training"
+"${PYTHON_RUN[@]}" src/trainer.py \
+  TRAINERS@trainer=tests/GRPO_qwen3.5-4b_8gen_test \
+  MODELS@model=tests/qwen3.5-4b_test
+echo "[$(date)] Training finished"
