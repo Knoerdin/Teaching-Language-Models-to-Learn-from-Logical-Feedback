@@ -4,22 +4,28 @@ set -euo pipefail
 
 if [ "$#" -lt 1 ]; then
   echo "Usage: $0 [sbatch-options...] <job-file>"
-  echo "Example: $0 train_qwen2.5-3b_test.job"
-  echo "Example: $0 --gpus=2 --mem=240G train_qwen3.5-9b.job"
+  echo "Example: $0 GRPO/train_grpo_qwen2.5-3b_test.job"
+  echo "Example: $0 --gpus=2 --mem=240G GRPO/train_grpo_qwen3.5-9b.job"
+  echo "Example: $0 SFT/train_sft_qwen3.5-9b.job"
   exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-JOB_FILE="$(basename "${@: -1}")"
+JOB_FILE="${@: -1}"
 SBATCH_ARGS=()
 if [ "$#" -gt 1 ]; then
   SBATCH_ARGS=("${@:1:$#-1}")
 fi
 
+if [ ! -f "$JOB_FILE" ] && [ -f "${JOB_FILE#SLURM/}" ]; then
+  JOB_FILE="${JOB_FILE#SLURM/}"
+fi
+
 if [ ! -f "$JOB_FILE" ]; then
-  echo "Job file not found in $SCRIPT_DIR: $JOB_FILE"
+  echo "Job file not found: $JOB_FILE"
+  echo "Paths are resolved relative to $SCRIPT_DIR"
   exit 1
 fi
 
@@ -61,7 +67,7 @@ override_value() {
 
 JOB_NAME="$(override_value "job-name" "$(read_sbatch_value "job-name")")"
 if [ -z "$JOB_NAME" ]; then
-  JOB_NAME="${JOB_FILE%.job}"
+  JOB_NAME="$(basename "${JOB_FILE%.job}")"
 fi
 
 GPUS="$(override_value "gpus" "$(read_sbatch_value "gpus")")"

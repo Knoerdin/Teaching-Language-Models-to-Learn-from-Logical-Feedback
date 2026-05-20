@@ -34,8 +34,8 @@ Run the Qwen 3.5 9B SFT comparison config:
 python src/trainer.py TRAINERS@trainer=SFT_qwen3.5-9b MODELS@model=qwen3.5-9b
 ```
 
-On SLURM, submit the matching comparison job from the repo root or `SLURM/`:
+On SLURM, submit and automatically tail the matching comparison job:
 
 ```bash
-sbatch SLURM/train_sft_qwen3.5-9b.job
+SLURM/submit_and_tail.sh SFT/train_sft_qwen3.5-9b.job
 ```

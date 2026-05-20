@@ -17,13 +17,14 @@ module purge
 module load 2025
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
-if [ -f "$SUBMIT_DIR/pyproject.toml" ]; then
-  PROJECT_DIR="$SUBMIT_DIR"
-elif [ -f "$SUBMIT_DIR/../pyproject.toml" ]; then
-  PROJECT_DIR="$(cd "$SUBMIT_DIR/.." && pwd)"
-else
+PROJECT_DIR="$SUBMIT_DIR"
+while [ "$PROJECT_DIR" != "/" ] && [ ! -f "$PROJECT_DIR/pyproject.toml" ]; do
+  PROJECT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+done
+
+if [ ! -f "$PROJECT_DIR/pyproject.toml" ]; then
   echo "Could not find project directory from submit directory: $SUBMIT_DIR"
-  echo "Submit from the repo root or the SLURM directory."
+  echo "Submit from the repo root, SLURM directory, or a SLURM job subdirectory."
   exit 1
 fi
 
