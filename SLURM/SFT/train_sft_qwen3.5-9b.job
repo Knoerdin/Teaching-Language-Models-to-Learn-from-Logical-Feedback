@@ -2,7 +2,7 @@
 #SBATCH --job-name=sft_qwen35_9b
 #SBATCH --output=logs/job_%j.out
 #SBATCH --error=logs/job_%j.out
-#SBATCH --time=08:00:00
+#SBATCH --time=16:00:00
 #SBATCH --partition=gpu_h100
 #SBATCH --gpus=4
 #SBATCH --cpus-per-task=32
