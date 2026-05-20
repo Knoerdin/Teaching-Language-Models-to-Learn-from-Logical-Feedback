@@ -33,7 +33,7 @@ from omegaconf import DictConfig, OmegaConf
 _bootstrap_log("Importing transformers")
 from transformers import AutoTokenizer, logging as transformers_logging
 _bootstrap_log("Importing TRL")
-from trl import GRPOConfig, GRPOTrainer
+from trl import GRPOConfig, GRPOTrainer, SFTConfig, SFTTrainer
 
 _bootstrap_log("Importing reward modules")
 from REWARDS.logical_feedback import configure_reward_console
@@ -43,6 +43,9 @@ _bootstrap_log("Finished trainer imports")
 
 
 VALID_LABELS = {"true", "false", "uncertain"}
+TRAINER_KIND_GRPO = "grpo"
+TRAINER_KIND_SFT = "sft"
+VALID_TRAINER_KINDS = {TRAINER_KIND_GRPO, TRAINER_KIND_SFT}
 
 
 def _log_stage(message: str) -> None:
@@ -116,7 +119,15 @@ def _build_prompt(example):
     )
 
 
-def _prepare_dataset(path: str) -> Dataset:
+def _build_sft_completion(example: dict[str, Any]) -> str:
+    return (
+        f"{str(example['premises-FOL']).strip()}\n\n"
+        "Conclusion:\n"
+        f"{str(example['conclusion-FOL']).strip()}"
+    )
+
+
+def _prepare_dataset(path: str, trainer_kind: str) -> Dataset:
     source_path = Path(path)
     if not source_path.exists():
         raise FileNotFoundError(f"Dataset file not found: {path}")
@@ -130,7 +141,7 @@ def _prepare_dataset(path: str) -> Dataset:
                 f"Unsupported label '{row['label']}'. "
                 f"Expected one of: {sorted(VALID_LABELS)}"
             )
-        return {
+        mapped_row = {
             "prompt": _build_prompt(row),
             "solution": _normalize_label(str(row["label"])),
             "premises": row["premises"],
@@ -139,6 +150,9 @@ def _prepare_dataset(path: str) -> Dataset:
             "conclusion_fol_gold": row["conclusion-FOL"],
             "example_id": str(row.get("example_id", "")),
         }
+        if trainer_kind == TRAINER_KIND_SFT:
+            mapped_row["completion"] = _build_sft_completion(row)
+        return mapped_row
 
     return raw.map(_map_row, remove_columns=raw.column_names)
 
@@ -173,6 +187,29 @@ def _optional_str(value: Any) -> str | None:
     if text.lower() in {"", "none", "null"}:
         return None
     return text
+
+
+def _trainer_kind(cfg: DictConfig) -> str:
+    configured_kind = _optional_str(cfg.trainer.get("kind", None))
+    if configured_kind:
+        trainer_kind = configured_kind.lower()
+    else:
+        target_hints = [
+            str(cfg.trainer.get("trainer_cls", {}).get("_target_", "")),
+            str(cfg.trainer.get("args", {}).get("_target_", "")),
+        ]
+        if any("SFT" in target_hint for target_hint in target_hints):
+            trainer_kind = TRAINER_KIND_SFT
+        else:
+            trainer_kind = TRAINER_KIND_GRPO
+
+    if trainer_kind not in VALID_TRAINER_KINDS:
+        raise ValueError(
+            f"Unsupported trainer kind '{trainer_kind}'. "
+            f"Expected one of: {sorted(VALID_TRAINER_KINDS)}"
+        )
+
+    return trainer_kind
 
 
 def _repo_tracking_uri() -> str:
@@ -273,13 +310,16 @@ def _configure_reward_logging(cfg: DictConfig):
     return logger
 
 
-def _configure_terminal_output(cfg: DictConfig) -> None:
+def _configure_terminal_output(cfg: DictConfig, trainer_kind: str) -> None:
     terminal_cfg = cfg.trainer.get("terminal", {})
     if bool(terminal_cfg.get("show_dataset_progress", False)):
         enable_progress_bar()
     else:
         disable_progress_bar()
     transformers_logging.set_verbosity_warning()
+
+    if trainer_kind != TRAINER_KIND_GRPO:
+        return
 
     configure_reward_console(
         print_autoformalizations=bool(
@@ -293,28 +333,45 @@ def _configure_terminal_output(cfg: DictConfig) -> None:
     )
 
 
-def _print_training_summary(cfg: DictConfig, runtime_device: str) -> None:
+def _print_training_summary(
+    cfg: DictConfig,
+    runtime_device: str,
+    trainer_kind: str,
+) -> None:
     args = cfg.trainer.args
     mlflow_cfg = cfg.trainer.get("mlflow", {})
     terminal_cfg = cfg.trainer.get("terminal", {})
 
     print("Starting training")
+    print(f"  trainer: {trainer_kind}")
     print(f"  model: {cfg.model.model_name_or_path}")
     print(f"  device: {runtime_device}")
     print(f"  output_dir: {cfg.trainer.output_dir}")
-    print(
-        "  steps/batch/gen: "
-        f"{args.max_steps}/{args.per_device_train_batch_size}/"
-        f"{args.get('num_generations', 'n/a')}"
+    batch_summary = (
+        f"{args.get('max_steps', 'n/a')}/"
+        f"{args.get('per_device_train_batch_size', 'n/a')}"
     )
-    print(
-        "  mlflow: "
-        f"enabled={mlflow_cfg.get('enabled', True)} "
-        f"traces={'off' if mlflow_cfg.get('disable_traces', True) else 'on'} "
-        f"experiment={mlflow_cfg.get('experiment_name', None) or cfg.experiment.name} "
-        f"tracking_uri={_resolve_mlflow_tracking_uri(mlflow_cfg)}"
-    )
-    if terminal_cfg.get("print_autoformalizations", True):
+    if "num_generations" in args:
+        batch_summary = f"{batch_summary}/{args.num_generations}"
+        print(f"  steps/batch/gen: {batch_summary}")
+    else:
+        print(f"  steps/batch: {batch_summary}")
+    if trainer_kind == TRAINER_KIND_SFT:
+        print(
+            "  completion_only_loss: "
+            f"{args.get('completion_only_loss', 'auto')}"
+        )
+    if trainer_kind == TRAINER_KIND_GRPO or cfg.trainer.get("mlflow", None):
+        print(
+            "  mlflow: "
+            f"enabled={mlflow_cfg.get('enabled', True)} "
+            f"traces={'off' if mlflow_cfg.get('disable_traces', True) else 'on'} "
+            f"experiment={mlflow_cfg.get('experiment_name', None) or cfg.experiment.name} "
+            f"tracking_uri={_resolve_mlflow_tracking_uri(mlflow_cfg)}"
+        )
+    if trainer_kind == TRAINER_KIND_GRPO and terminal_cfg.get(
+        "print_autoformalizations", True
+    ):
         print(
             "  autoformalizations: "
             "printing "
@@ -413,21 +470,47 @@ def _build_peft_config(cfg: DictConfig):
     return LoraConfig(**peft_kwargs)
 
 
+def _build_trainer_args_dict(
+    cfg: DictConfig,
+    *,
+    runtime_device: str,
+    tokenizer: Any,
+    trainer_kind: str,
+) -> dict[str, Any]:
+    trainer_args_dict = OmegaConf.to_container(cfg.trainer.args, resolve=True)
+    trainer_args_dict.pop("_target_", None)
+
+    if trainer_kind == TRAINER_KIND_GRPO:
+        _add_generation_guards(trainer_args_dict, tokenizer)
+    _add_model_init_kwargs(trainer_args_dict, cfg)
+
+    trainer_args_dict["output_dir"] = str(cfg.trainer.output_dir)
+    trainer_args_dict["run_name"] = str(cfg.experiment.name)
+    trainer_args_dict["use_cpu"] = runtime_device == "cpu"
+    trainer_args_dict["dataloader_pin_memory"] = runtime_device == "cuda"
+
+    return trainer_args_dict
+
+
 @hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
 def main(cfg: DictConfig) -> None:
     _log_stage("Configuring runtime")
+    trainer_kind = _trainer_kind(cfg)
     _set_seed(int(cfg.trainer.seed))
     runtime_device = _resolve_runtime_device(cfg)
     os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-    _configure_terminal_output(cfg)
-    _configure_reward_logging(cfg)
+    _configure_terminal_output(cfg, trainer_kind)
+    if trainer_kind == TRAINER_KIND_GRPO:
+        _configure_reward_logging(cfg)
+    elif bool(cfg.trainer.get("mlflow", {}).get("disable_traces", True)):
+        _disable_mlflow_tracing()
 
-    _print_training_summary(cfg, runtime_device)
+    _print_training_summary(cfg, runtime_device, trainer_kind)
 
     _log_stage(f"Loading train dataset: {cfg.dataset.train_path}")
-    train_dataset = _prepare_dataset(str(cfg.dataset.train_path))
+    train_dataset = _prepare_dataset(str(cfg.dataset.train_path), trainer_kind)
     _log_stage(f"Loading validation dataset: {cfg.dataset.validation_path}")
-    eval_dataset = _prepare_dataset(str(cfg.dataset.validation_path))
+    eval_dataset = _prepare_dataset(str(cfg.dataset.validation_path), trainer_kind)
 
     tokenizer_name = cfg.model.tokenizer_name_or_path or cfg.model.model_name_or_path
     _log_stage(f"Loading tokenizer: {tokenizer_name}")
@@ -435,31 +518,42 @@ def main(cfg: DictConfig) -> None:
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    _log_stage("Building GRPO config")
-    trainer_args_dict = OmegaConf.to_container(cfg.trainer.args, resolve=True)
-
-    trainer_args_dict.pop("_target_", None)
-    _add_generation_guards(trainer_args_dict, tokenizer)
-    _add_model_init_kwargs(trainer_args_dict, cfg)
-
-    trainer_args_dict["output_dir"] = str(cfg.trainer.output_dir)
-    trainer_args_dict["run_name"] = str(cfg.experiment.name)
-    trainer_args_dict["use_cpu"] = (runtime_device == "cpu")
-    trainer_args_dict["dataloader_pin_memory"] = (runtime_device == "cuda")
-
-    trainer_args = GRPOConfig(**trainer_args_dict)
+    _log_stage(f"Building {trainer_kind.upper()} config")
+    trainer_args_dict = _build_trainer_args_dict(
+        cfg,
+        runtime_device=runtime_device,
+        tokenizer=tokenizer,
+        trainer_kind=trainer_kind,
+    )
     peft_config = _build_peft_config(cfg)
 
-    _log_stage(f"Initializing GRPOTrainer and loading model: {cfg.model.model_name_or_path}")
-    trainer = GRPOTrainer(
-        model=str(cfg.model.model_name_or_path),
-        reward_funcs=logical_feedback_reward,
-        args=trainer_args,
-        train_dataset=train_dataset,
-        eval_dataset=eval_dataset,
-        processing_class=tokenizer,
-        peft_config=peft_config,
-    )
+    if trainer_kind == TRAINER_KIND_GRPO:
+        trainer_args = GRPOConfig(**trainer_args_dict)
+        _log_stage(
+            f"Initializing GRPOTrainer and loading model: {cfg.model.model_name_or_path}"
+        )
+        trainer = GRPOTrainer(
+            model=str(cfg.model.model_name_or_path),
+            reward_funcs=logical_feedback_reward,
+            args=trainer_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            processing_class=tokenizer,
+            peft_config=peft_config,
+        )
+    else:
+        trainer_args = SFTConfig(**trainer_args_dict)
+        _log_stage(
+            f"Initializing SFTTrainer and loading model: {cfg.model.model_name_or_path}"
+        )
+        trainer = SFTTrainer(
+            model=str(cfg.model.model_name_or_path),
+            args=trainer_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            processing_class=tokenizer,
+            peft_config=peft_config,
+        )
 
     try:
         _log_stage("Starting trainer.train()")
@@ -467,7 +561,8 @@ def main(cfg: DictConfig) -> None:
         _log_stage(f"Saving model to: {cfg.trainer.output_dir}")
         trainer.save_model(str(cfg.trainer.output_dir))
     finally:
-        flush_reward_logging()
+        if trainer_kind == TRAINER_KIND_GRPO:
+            flush_reward_logging()
 
 
 if __name__ == "__main__":

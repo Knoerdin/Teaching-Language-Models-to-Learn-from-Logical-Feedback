@@ -1,5 +1,5 @@
 kind: sft
-output_dir: outputs/sft
+output_dir: outputs/sft_test
 seed: 42
 device: auto
 
@@ -12,14 +12,13 @@ trainer_cls:
 args:
   _target_: trl.SFTConfig
   learning_rate: 2.0e-5
-  per_device_train_batch_size: 4
-  max_steps: 500
-  logging_steps: 10
-  save_steps: 100
-  eval_strategy: steps
-  eval_steps: 100
-  max_length: 2048
+  per_device_train_batch_size: 1
+  max_steps: 3
+  logging_steps: 1
+  save_steps: 3
+  eval_strategy: "no"
+  max_length: 1024
   completion_only_loss: true
   packing: false
-  gradient_checkpointing: true
+  gradient_checkpointing: false
   report_to: none

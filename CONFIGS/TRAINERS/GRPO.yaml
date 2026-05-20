@@ -1,3 +1,4 @@
+kind: grpo
 output_dir: outputs
 seed: 42
 device: mps
