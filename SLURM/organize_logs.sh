@@ -10,6 +10,23 @@ sanitize_path_part() {
     | sed -E 's/[^a-z0-9._-]+/_/g; s/^_+//; s/_+$//'
 }
 
+job_group_for_name() {
+  local job_name
+  job_name="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+
+  case "$job_name" in
+    sft*|*_sft*)
+      printf 'SFT\n'
+      ;;
+    grpo*|*_grpo*)
+      printf 'GRPO\n'
+      ;;
+    *)
+      printf 'misc\n'
+      ;;
+  esac
+}
+
 first_match() {
   local pattern="$1"
   local file="$2"
@@ -79,7 +96,8 @@ label_for_file() {
     param_label="${param_label}_${steps}"
   fi
 
-  printf '%s/%s\n' \
+  printf '%s/%s/%s\n' \
+    "$(job_group_for_name "$job_name")" \
     "$(printf '%s' "$job_name" | sanitize_path_part)" \
     "$(printf '%s' "$param_label" | sanitize_path_part)"
 }
@@ -89,9 +107,21 @@ if [ ! -d "$LOG_ROOT" ]; then
   exit 1
 fi
 
-shopt -s nullglob
-for log_file in "$LOG_ROOT"/job_*.out "$LOG_ROOT"/job_*.err; do
-  [ -f "$log_file" ] || continue
+is_already_grouped() {
+  case "$1" in
+    "$LOG_ROOT"/SFT/*/*|"$LOG_ROOT"/GRPO/*/*|"$LOG_ROOT"/misc/*/*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+while IFS= read -r -d '' log_file; do
+  if is_already_grouped "$log_file"; then
+    continue
+  fi
 
   relative_group="$(label_for_file "$log_file")"
   destination_dir="$LOG_ROOT/$relative_group"
@@ -109,4 +139,4 @@ for log_file in "$LOG_ROOT"/job_*.out "$LOG_ROOT"/job_*.err; do
 
   mv "$log_file" "$destination"
   echo "$log_file -> $destination"
-done
+done < <(find "$LOG_ROOT" -type f \( -name "job_*.out" -o -name "job_*.err" \) -print0)

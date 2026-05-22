@@ -34,6 +34,20 @@ sanitize_path_part() {
     | sed -E 's/[^a-z0-9._-]+/_/g; s/^_+//; s/_+$//'
 }
 
+job_group_for_file() {
+  case "$JOB_FILE" in
+    SFT/*)
+      printf 'SFT\n'
+      ;;
+    GRPO/*)
+      printf 'GRPO\n'
+      ;;
+    *)
+      printf 'misc\n'
+      ;;
+  esac
+}
+
 read_sbatch_value() {
   local key="$1"
   local value=""
@@ -77,7 +91,8 @@ MEMORY="$(override_value "mem" "$(read_sbatch_value "mem")")"
 JOB_LABEL="$(printf '%s' "$JOB_NAME" | sanitize_path_part)"
 PARAM_LABEL="gpus${GPUS:-unknown}_cpus${CPUS:-unknown}_mem${MEMORY:-unknown}"
 PARAM_LABEL="$(printf '%s' "$PARAM_LABEL" | sanitize_path_part)"
-LOG_DIR="logs/$JOB_LABEL/$PARAM_LABEL"
+JOB_GROUP="$(job_group_for_file)"
+LOG_DIR="logs/$JOB_GROUP/$JOB_LABEL/$PARAM_LABEL"
 mkdir -p "$LOG_DIR"
 
 SUBMIT_OUTPUT="$(sbatch "${SBATCH_ARGS[@]}" --output="$LOG_DIR/job_%j.out" --error="$LOG_DIR/job_%j.out" "$JOB_FILE")"

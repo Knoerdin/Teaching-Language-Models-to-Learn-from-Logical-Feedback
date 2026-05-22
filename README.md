@@ -69,3 +69,8 @@ On SLURM, submit and automatically tail the matching comparison job:
 ```bash
 SLURM/submit_and_tail.sh SFT/train_sft_qwen3.5-9b.job
 ```
+
+The submit helper writes SLURM stdout/stderr under `SLURM/logs/SFT/` or
+`SLURM/logs/GRPO/`, grouped by job name and resource settings. If submitting
+directly with `sbatch`, run it from the repo root so the job-file fallback paths
+also resolve under `SLURM/logs/`.

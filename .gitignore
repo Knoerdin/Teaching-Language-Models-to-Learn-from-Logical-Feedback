@@ -22,7 +22,14 @@ data/*
 !data/wikidata_topics.csv
 !data/Prompt_Examples
 outputs
-SLURM/logs
+/logs/
+SLURM/logs/**
+!SLURM/logs/
+!SLURM/logs/.gitkeep
+!SLURM/logs/SFT/
+!SLURM/logs/SFT/.gitkeep
+!SLURM/logs/GRPO/
+!SLURM/logs/GRPO/.gitkeep
 SLURM/log_summaries
 src/outputs
 mlruns
