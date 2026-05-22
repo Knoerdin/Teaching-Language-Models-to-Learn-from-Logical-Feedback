@@ -1,7 +1,7 @@
 import re
 
 LOGIC_OPERATOR_PATTERN = re.compile(
-    r"(∀|∃|¬|→|∧|∨|⊕|->|\bforall\b|\bexists\b)",
+    r"(∀|∃|¬|→|∧|∨|⊕|↔|->|\bforall\b|\bexists\b)",
     flags=re.IGNORECASE,
 )
 PREDICATE_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9_]*\s*\([^()\n]*\)")
@@ -32,7 +32,7 @@ INLINE_ROLE_MARKER_PATTERN = re.compile(
     flags=re.IGNORECASE,
 )
 UNSUPPORTED_SYMBOL_PATTERN = re.compile(
-    r"(\[|\]|~|↦|∉|∈|⇒|⇔|↔|\.|;|\\|<|(?<!-)>|\^|&|\||=|\+|"
+    r"(\[|\]|~|↦|∉|∈|⇒|⇔|\.|;|\\|<|(?<!-)>|\^|&|\||\+|"
     r"(?<!<)-(?!>)|،)"
 )
 FORMULA_COMMA_PATTERN = re.compile(

@@ -14,6 +14,7 @@ class RewardBreakdownLike(Protocol):
     format_reward: float
     parsability_reward: float
     correctness_reward: float
+    gold_fol_reward: float
     parsed: bool
     prover_attempted: bool
     prover_status: str
@@ -127,11 +128,16 @@ class MLflowRewardLogger:
         formats = [breakdown.format_reward for breakdown in breakdowns]
         parsability = [breakdown.parsability_reward for breakdown in breakdowns]
         correctness = [breakdown.correctness_reward for breakdown in breakdowns]
+        gold_fol = [
+            getattr(breakdown, "gold_fol_reward", 0.0)
+            for breakdown in breakdowns
+        ]
 
         reward_total_mean = _mean(totals)
         reward_format_mean = _mean(formats)
         reward_parsability_mean = _mean(parsability)
         reward_correctness_mean = _mean(correctness)
+        reward_gold_fol_mean = _mean(gold_fol)
         parse_success_rate = _rate([breakdown.parsed for breakdown in breakdowns])
         prover_attempt_rate = _rate(
             [breakdown.prover_attempted for breakdown in breakdowns]
@@ -169,6 +175,7 @@ class MLflowRewardLogger:
             "format_reward": reward_format_mean,
             "parsability_reward": reward_parsability_mean,
             "correctness_reward": reward_correctness_mean,
+            "gold_fol_reward": reward_gold_fol_mean,
             "parse_success_rate": parse_success_rate,
             "prover_correct_rate": prover_correct_rate,
             "prover_unknown_rate": prover_unknown_rate,
@@ -183,6 +190,7 @@ class MLflowRewardLogger:
             "reward/format_mean": reward_format_mean,
             "reward/parsability_mean": reward_parsability_mean,
             "reward/correctness_mean": reward_correctness_mean,
+            "reward/gold_fol_mean": reward_gold_fol_mean,
             "reward/parse_success_rate": parse_success_rate,
             "reward/prover_attempt_rate": prover_attempt_rate,
             "reward/prover_correct_rate": prover_correct_rate,
@@ -237,6 +245,11 @@ class MLflowRewardLogger:
             steps,
             [row["reward/correctness_mean"] for row in self.history],
             label="correctness",
+        )
+        axes[0].plot(
+            steps,
+            [row["reward/gold_fol_mean"] for row in self.history],
+            label="gold FOL",
         )
         axes[0].set_ylabel("mean reward")
         axes[0].legend(loc="best")

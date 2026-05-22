@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import os
 from typing import Any
 
+from .fol_schema import gold_fol_reward
 from .formatting import completion_to_text, extract_formalization, format_reward
 from .mlflow_logging import log_reward_batch
 from .parsing import parsability_reward
@@ -17,6 +18,7 @@ class RewardBreakdown:
     format_reward: float
     parsability_reward: float
     correctness_reward: float
+    gold_fol_reward: float
     parsed: bool
     prover_attempted: bool
     prover_status: str
@@ -116,6 +118,7 @@ def _print_breakdown(
         f"format={breakdown.format_reward:.3f} "
         f"parsability={breakdown.parsability_reward:.3f} "
         f"correctness={breakdown.correctness_reward:.3f} "
+        f"gold_fol={breakdown.gold_fol_reward:.3f} "
         f"status={breakdown.prover_status}"
     )
     if breakdown.prover_state_status:
@@ -162,6 +165,8 @@ def score_logical_feedback_breakdown(
     nl_premises: str,
     nl_conclusion: str,
     gold_label: str,
+    gold_premises: str | None = None,
+    gold_conclusion: str | None = None,
 ) -> RewardBreakdown:
     formatting_score = format_reward(text)
     formal_premises, formal_conclusion = extract_formalization(text)
@@ -177,6 +182,7 @@ def score_logical_feedback_breakdown(
             format_reward=formatting_score,
             parsability_reward=parsability_score,
             correctness_reward=0.0,
+            gold_fol_reward=0.0,
             parsed=False,
             prover_attempted=False,
             prover_status="not_parsed",
@@ -185,6 +191,16 @@ def score_logical_feedback_breakdown(
 
     from .proving import evaluate_correctness
 
+    gold_fol_score = (
+        gold_fol_reward(
+            formal_premises,
+            formal_conclusion,
+            gold_premises,
+            gold_conclusion,
+        ).reward
+        if gold_premises is not None and gold_conclusion is not None
+        else 0.0
+    )
     prover_result = evaluate_correctness(
         nl_premises=nl_premises,
         nl_conclusion=nl_conclusion,
@@ -209,13 +225,16 @@ def score_logical_feedback_breakdown(
         correctness_score = 0.0
     elif prover_result.status == "exception":
         correctness_score = 0.0
-    total_reward = formatting_score + parsability_score + correctness_score
+    total_reward = (
+        formatting_score + parsability_score + correctness_score + gold_fol_score
+    )
 
     return RewardBreakdown(
         total_reward=total_reward,
         format_reward=formatting_score,
         parsability_reward=parsability_score,
         correctness_reward=correctness_score,
+        gold_fol_reward=gold_fol_score,
         parsed=cleanly_parsed,
         prover_attempted=True,
         prover_status=prover_result.status,
@@ -235,12 +254,16 @@ def score_logical_feedback(
     nl_premises: str,
     nl_conclusion: str,
     gold_label: str,
+    gold_premises: str | None = None,
+    gold_conclusion: str | None = None,
 ) -> float:
     return score_logical_feedback_breakdown(
         text,
         nl_premises=nl_premises,
         nl_conclusion=nl_conclusion,
         gold_label=gold_label,
+        gold_premises=gold_premises,
+        gold_conclusion=gold_conclusion,
     ).total_reward
 
 
@@ -250,9 +273,15 @@ def logical_feedback_reward(
     solution: list[str],
     premises: list[str],
     conclusion: list[str],
+    premises_fol_gold: list[str] | None = None,
+    conclusion_fol_gold: list[str] | None = None,
     **_: Any,
 ) -> list[float]:
     del prompts
+    if premises_fol_gold is None:
+        premises_fol_gold = [None] * len(completions)
+    if conclusion_fol_gold is None:
+        conclusion_fol_gold = [None] * len(completions)
 
     breakdowns = [
         score_logical_feedback_breakdown(
@@ -260,9 +289,24 @@ def logical_feedback_reward(
             nl_premises=nl_premises,
             nl_conclusion=nl_conclusion,
             gold_label=gold_label,
+            gold_premises=gold_premises,
+            gold_conclusion=gold_conclusion,
         )
-        for completion_item, gold_label, nl_premises, nl_conclusion in zip(
-            completions, solution, premises, conclusion, strict=True
+        for (
+            completion_item,
+            gold_label,
+            nl_premises,
+            nl_conclusion,
+            gold_premises,
+            gold_conclusion,
+        ) in zip(
+            completions,
+            solution,
+            premises,
+            conclusion,
+            premises_fol_gold,
+            conclusion_fol_gold,
+            strict=True,
         )
     ]
 

@@ -3,6 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+try:
+    from REWARDS.fol_schema import format_schema_section
+except ModuleNotFoundError:
+    from src.REWARDS.fol_schema import format_schema_section
+
 
 VALID_LABELS = {"true", "false", "uncertain"}
 TRAINER_KIND_GRPO = "grpo"
@@ -14,7 +19,30 @@ def normalize_label(value: str) -> str:
     return value.strip().lower()
 
 
+def _gold_value(example: dict[str, Any], hyphen_key: str, snake_key: str) -> str | None:
+    value = example.get(hyphen_key)
+    if value is None:
+        value = example.get(snake_key)
+    if value is None:
+        return None
+    return str(value).strip()
+
+
+def build_schema_section(example: dict[str, Any]) -> str:
+    return format_schema_section(
+        _gold_value(example, "premises-FOL", "premises_fol_gold"),
+        _gold_value(example, "conclusion-FOL", "conclusion_fol_gold"),
+    )
+
+
 def build_prompt(example: dict[str, Any]) -> str:
+    problem_schema = build_schema_section(example)
+    schema_prompt = (
+        "Problem schema:\n"
+        f"{problem_schema}\n\n"
+        if problem_schema
+        else ""
+    )
     return (
         "Translate natural-language premises and conclusion into first-order logic.\n"
         "Return only the formalization. No explanation. No truth label.\n\n"
@@ -24,15 +52,27 @@ def build_prompt(example: dict[str, Any]) -> str:
         "Conclusion:\n"
         "<one complete FOL conclusion>\n\n"
         "Formula rules:\n"
-        "Use only these logical operators: ∀, ∃, ¬, →, ∧, ∨, ⊕.\n"
+        "Use only these logical operators: ∀, ∃, ¬, →, ∧, ∨, ⊕, ↔.\n"
         "Operator meanings: ∀ means for all; ∃ means there exists; ¬ means not; "
         "→ means implies; ∧ means and; ∨ means inclusive or; ⊕ means exclusive or.\n"
-        "Do not use ↔, ⇔, ⇒, ∴, bullets, markdown, quotes, or extra labels.\n"
+        "↔ means if and only if.\n"
+        "Do not use ⇔, ⇒, ∴, bullets, markdown, quotes, or extra labels.\n"
         "Do not write chat-role words such as user, assistant, or system.\n"
-        "Predicate, variable, and constant names must use English letters, digits, or underscores.\n"
+        "Predicate, variable, and constant names must use English letters, "
+        "digits, or underscores.\n"
         "Every line must be a complete formula with balanced parentheses.\n"
         "Use commas only inside predicate arguments, never between formulas; use ∧ for and.\n"
+        "Equality and inequality may be used as = and ≠ when needed.\n"
+        "When a problem schema is provided, use only its predicate names, arities, "
+        "and constants/literals; introduce variables as needed.\n"
+        "If a phrase combines concepts that appear separately in the schema, "
+        "write a conjunction of those predicates instead of inventing a compound predicate.\n"
         "Stop immediately after the conclusion formula.\n\n"
+        "Example schema:\n"
+        "Allowed predicates:\n"
+        "Eel/1, Fish/1, Plant/1, DisplayedIn/2, Animal/1, Multicellular/1, Bacteria/1\n\n"
+        "Allowed constants/literals:\n"
+        "collection, seaEel\n\n"
         "Example natural-language premises:\n"
         "All eels are fish.\n"
         "No fish are plants.\n"
@@ -54,6 +94,7 @@ def build_prompt(example: dict[str, Any]) -> str:
         "Eel(seaEel) ∨ Animal(seaEel) ∨ ¬Plant(seaEel)\n\n"
         "Conclusion:\n"
         "Eel(seaEel)\n\n"
+        f"{schema_prompt}"
         "Problem natural-language premises:\n"
         f"{example['premises']}\n\n"
         "Problem natural-language conclusion:\n"

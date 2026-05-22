@@ -49,9 +49,13 @@ python src/evaluate_autoformalization.py \
   --output-dir outputs/evaluations/qwen3.5-9b
 ```
 
-The main score is normalized exact-match accuracy for `premises-FOL` plus
+The prompt is schema-conditioned from the gold FOL inventory: each example
+includes the allowed predicate signatures and constants/literals. The main
+score is normalized exact-match accuracy for `premises-FOL` plus
 `conclusion-FOL`; the script also reports premise-order-insensitive accuracy,
-parse rate, conclusion accuracy, and premise macro F1.
+parse rate, conclusion accuracy, premise macro F1, schema predicate/constant
+F1, and evaluation-only postprocessing counts. Pass `--no-postprocess` to score
+raw generations without casing/junk cleanup.
 
 When `--output-dir` is set, the evaluator also writes Markdown reports under
 `OUTPUT_DIR/eval_reports/`, separated into `grpo/` and `sft/` subfolders when

@@ -11,6 +11,9 @@ import random
 import re
 from typing import Any
 
+from REWARDS.fol_schema import gold_fol_reward as score_gold_fol_reward
+from REWARDS.fol_schema import postprocess_formalization
+from REWARDS.fol_schema import schema_violations
 from REWARDS.formatting import extract_formalization
 from autoformalization import build_prompt, normalize_label
 
@@ -32,6 +35,7 @@ REQUIRED_DATASET_COLUMNS = {
     "label",
 }
 ARROW_ALIASES = ("->", "=>", "⇒")
+BICONDITIONAL_ALIASES = ("⇔", "<->")
 
 
 @dataclass(frozen=True)
@@ -128,6 +132,15 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Also run the symbolic prover on generated FOL and report label accuracy. "
             "Exact gold-FOL accuracy is always reported."
+        ),
+    )
+    parser.add_argument(
+        "--postprocess",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Apply evaluation-only cleanup before scoring: trim trailing junk, "
+            "canonicalize schema casing, and flag schema violations."
         ),
     )
     parser.add_argument(
@@ -244,6 +257,8 @@ def normalize_fol_line(line: str) -> str:
     line = line.strip()
     for alias in ARROW_ALIASES:
         line = line.replace(alias, "→")
+    for alias in BICONDITIONAL_ALIASES:
+        line = line.replace(alias, "↔")
     line = line.replace("~", "¬")
     return re.sub(r"\s+", "", line)
 
@@ -453,16 +468,48 @@ def score_prediction(
     generation: str,
     *,
     run_prover: bool,
+    apply_postprocessing: bool,
 ) -> dict[str, Any]:
-    predicted_premises, predicted_conclusion = extract_formalization(generation)
-    parsed = predicted_premises is not None and predicted_conclusion is not None
+    raw_predicted_premises, raw_predicted_conclusion = extract_formalization(generation)
 
     gold_premises = str(record["premises-FOL"]).strip()
     gold_conclusion = str(record["conclusion-FOL"]).strip()
+    if apply_postprocessing:
+        postprocessed = postprocess_formalization(
+            raw_predicted_premises,
+            raw_predicted_conclusion,
+            gold_premises,
+            gold_conclusion,
+        )
+        predicted_premises = postprocessed.premises
+        predicted_conclusion = postprocessed.conclusion
+        postprocessing_changed = postprocessed.changed
+        invalid_predicates = list(postprocessed.invalid_predicates)
+        invalid_constants = list(postprocessed.invalid_constants)
+    else:
+        predicted_premises = raw_predicted_premises
+        predicted_conclusion = raw_predicted_conclusion
+        postprocessing_changed = False
+        raw_invalid_predicates, raw_invalid_constants = schema_violations(
+            raw_predicted_premises,
+            raw_predicted_conclusion,
+            gold_premises,
+            gold_conclusion,
+        )
+        invalid_predicates = list(raw_invalid_predicates)
+        invalid_constants = list(raw_invalid_constants)
+
+    parsed = predicted_premises is not None and predicted_conclusion is not None
     predicted_premise_lines = normalized_lines(predicted_premises)
     gold_premise_lines = normalized_lines(gold_premises)
     predicted_conclusion_norm = normalized_block(predicted_conclusion)
     gold_conclusion_norm = normalized_block(gold_conclusion)
+    gold_overlap = score_gold_fol_reward(
+        predicted_premises,
+        predicted_conclusion,
+        gold_premises,
+        gold_conclusion,
+    )
 
     premises_ordered_exact = normalized_block(predicted_premises) == normalized_block(
         gold_premises
@@ -485,10 +532,16 @@ def score_prediction(
         "nl_conclusion": str(record["conclusion"]),
         "parsed": parsed,
         "generation": generation,
+        "raw_predicted_premises": raw_predicted_premises,
+        "raw_predicted_conclusion": raw_predicted_conclusion,
         "predicted_premises": predicted_premises,
         "predicted_conclusion": predicted_conclusion,
         "gold_premises": gold_premises,
         "gold_conclusion": gold_conclusion,
+        "postprocessed": apply_postprocessing,
+        "postprocessing_changed": postprocessing_changed,
+        "invalid_predicates": invalid_predicates,
+        "invalid_constants": invalid_constants,
         "premises_ordered_exact": premises_ordered_exact,
         "premises_unordered_exact": premises_unordered_exact,
         "conclusion_exact": conclusion_exact,
@@ -500,6 +553,14 @@ def score_prediction(
         "premise_precision": premise_precision,
         "premise_recall": premise_recall,
         "premise_f1": premise_f1,
+        "schema_predicate_precision": gold_overlap.predicate_score.precision,
+        "schema_predicate_recall": gold_overlap.predicate_score.recall,
+        "schema_predicate_f1": gold_overlap.predicate_score.f1,
+        "schema_constant_precision": gold_overlap.constant_score.precision,
+        "schema_constant_recall": gold_overlap.constant_score.recall,
+        "schema_constant_f1": gold_overlap.constant_score.f1,
+        "gold_fol_reward": gold_overlap.reward,
+        "schema_clean": parsed and not invalid_predicates and not invalid_constants,
     }
 
     if run_prover:
@@ -566,6 +627,7 @@ def summarize_results(
         "max_input_tokens": generation_config.max_input_tokens,
         "temperature": generation_config.temperature,
         "top_p": generation_config.top_p,
+        "postprocess": any(result.get("postprocessed", False) for result in results),
         "parse_rate": rate("parsed"),
         "autoformalization_accuracy": rate("joint_ordered_exact"),
         "autoformalization_accuracy_ignore_premise_order": rate(
@@ -580,6 +642,17 @@ def summarize_results(
         ),
         "premise_macro_recall": mean(result["premise_recall"] for result in results),
         "premise_macro_f1": mean(result["premise_f1"] for result in results),
+        "schema_predicate_macro_f1": mean(
+            result["schema_predicate_f1"] for result in results
+        ),
+        "schema_constant_macro_f1": mean(
+            result["schema_constant_f1"] for result in results
+        ),
+        "gold_fol_reward_mean": mean(result["gold_fol_reward"] for result in results),
+        "schema_clean_rate": rate("schema_clean"),
+        "postprocessing_changed_rate": mean(
+            float(result.get("postprocessing_changed", False)) for result in results
+        ),
     }
 
     if run_prover:
@@ -628,6 +701,7 @@ def evaluate_model(
                 record,
                 generation,
                 run_prover=args.run_prover,
+                apply_postprocessing=args.postprocess,
             )
             result["model_name"] = spec.name
             result["model_path"] = spec.path
@@ -766,6 +840,7 @@ def build_model_report_markdown(
         f"| Max input tokens | {markdown_cell(metrics['max_input_tokens'])} |",
         f"| Temperature | {format_metric_value(metrics['temperature'])} |",
         f"| Top p | {format_metric_value(metrics['top_p'])} |",
+        f"| Evaluation postprocessing | {yes_no(metrics.get('postprocess', False))} |",
         "",
         "## Metrics",
         "",
@@ -807,6 +882,11 @@ def build_model_report_markdown(
                 f"{count_true(predictions, 'premises_unordered_exact')} |"
             ),
             f"| Conclusion match | {count_true(predictions, 'conclusion_exact')} |",
+            f"| Schema clean | {count_true(predictions, 'schema_clean')} |",
+            (
+                "| Postprocessing changed output | "
+                f"{count_true(predictions, 'postprocessing_changed')} |"
+            ),
             "",
             (
                 "Correct examples below use the full autoformalization match while "
@@ -861,6 +941,15 @@ def report_metric_rows(
         ("Premise macro precision", "premise_macro_precision", None),
         ("Premise macro recall", "premise_macro_recall", None),
         ("Premise macro F1", "premise_macro_f1", None),
+        ("Schema predicate macro F1", "schema_predicate_macro_f1", None),
+        ("Schema constant macro F1", "schema_constant_macro_f1", None),
+        ("Gold-FOL reward mean", "gold_fol_reward_mean", None),
+        ("Schema clean rate", "schema_clean_rate", "schema_clean"),
+        (
+            "Postprocessing changed rate",
+            "postprocessing_changed_rate",
+            "postprocessing_changed",
+        ),
     ]
     if "prover_label_accuracy" in metrics:
         rows.extend(
@@ -897,8 +986,15 @@ def build_report_summary_markdown(
             [
                 f"## {trainer_kind.upper()}",
                 "",
-                "| Model | Report | Examples | Parse rate | Full accuracy | Full accuracy, ignore order | Conclusion accuracy | Premise macro F1 |",
-                "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+                (
+                    "| Model | Report | Examples | Parse rate | Full accuracy | "
+                    "Full accuracy, ignore order | Conclusion accuracy | "
+                    "Premise macro F1 | Schema pred F1 | Schema const F1 |"
+                ),
+                (
+                    "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | "
+                    "---: | ---: |"
+                ),
             ]
         )
         for entry in grouped_entries[trainer_kind]:
@@ -906,15 +1002,20 @@ def build_report_summary_markdown(
             predictions = entry["predictions"]
             report_path = entry["path"]
             relative_report_path = report_path.relative_to(report_dir).as_posix()
+            full_ignore_order = format_metric_value(
+                metrics["autoformalization_accuracy_ignore_premise_order"]
+            )
             lines.append(
                 f"| {markdown_cell(metrics['model_name'])} | "
                 f"[report]({relative_report_path}) | "
                 f"{len(predictions)} | "
                 f"{format_metric_value(metrics['parse_rate'])} | "
                 f"{format_metric_value(metrics['autoformalization_accuracy'])} | "
-                f"{format_metric_value(metrics['autoformalization_accuracy_ignore_premise_order'])} | "
+                f"{full_ignore_order} | "
                 f"{format_metric_value(metrics['conclusion_accuracy'])} | "
-                f"{format_metric_value(metrics['premise_macro_f1'])} |"
+                f"{format_metric_value(metrics['premise_macro_f1'])} | "
+                f"{format_metric_value(metrics.get('schema_predicate_macro_f1'))} | "
+                f"{format_metric_value(metrics.get('schema_constant_macro_f1'))} |"
             )
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
@@ -1001,6 +1102,10 @@ def append_example(lines: list[str], result: dict[str, Any], index: int) -> None
             ),
             f"- Conclusion exact: `{yes_no(result['conclusion_exact'])}`",
             f"- Premise F1: `{result['premise_f1']:.4f}`",
+            f"- Schema predicate F1: `{result['schema_predicate_f1']:.4f}`",
+            f"- Schema constant F1: `{result['schema_constant_f1']:.4f}`",
+            f"- Schema clean: `{yes_no(result['schema_clean'])}`",
+            f"- Postprocessing changed output: `{yes_no(result['postprocessing_changed'])}`",
             "",
             "Natural-language premises:",
             fenced_block(result.get("nl_premises")),
@@ -1022,6 +1127,32 @@ def append_example(lines: list[str], result: dict[str, Any], index: int) -> None
             "",
         ]
     )
+    invalid_predicates = result.get("invalid_predicates") or []
+    invalid_constants = result.get("invalid_constants") or []
+    if invalid_predicates or invalid_constants:
+        lines.extend(
+            [
+                "Schema violations after postprocessing:",
+                fenced_block(
+                    {
+                        "invalid_predicates": invalid_predicates,
+                        "invalid_constants": invalid_constants,
+                    }
+                ),
+                "",
+            ]
+        )
+    if result.get("postprocessing_changed"):
+        lines.extend(
+            [
+                "Raw parsed premises FOL:",
+                fenced_block(result.get("raw_predicted_premises")),
+                "",
+                "Raw parsed conclusion FOL:",
+                fenced_block(result.get("raw_predicted_conclusion")),
+                "",
+            ]
+        )
     if not result["parsed"]:
         lines.extend(["Raw generation:", fenced_block(result.get("generation")), ""])
 
@@ -1085,6 +1216,14 @@ def print_metrics(metrics: dict[str, Any]) -> None:
     )
     print(f"  conclusion_accuracy: {metrics['conclusion_accuracy']:.4f}")
     print(f"  premise_macro_f1: {metrics['premise_macro_f1']:.4f}")
+    print(f"  schema_predicate_macro_f1: {metrics['schema_predicate_macro_f1']:.4f}")
+    print(f"  schema_constant_macro_f1: {metrics['schema_constant_macro_f1']:.4f}")
+    print(f"  gold_fol_reward_mean: {metrics['gold_fol_reward_mean']:.4f}")
+    print(f"  schema_clean_rate: {metrics['schema_clean_rate']:.4f}")
+    print(
+        "  postprocessing_changed_rate: "
+        f"{metrics['postprocessing_changed_rate']:.4f}"
+    )
     if "prover_label_accuracy" in metrics:
         print(f"  prover_label_accuracy: {metrics['prover_label_accuracy']:.4f}")
         print(

@@ -199,6 +199,7 @@ def _configure_reward_logging(cfg: DictConfig):
             "reward_format_metric": "format_reward",
             "reward_parsability_metric": "parsability_reward",
             "reward_correctness_metric": "correctness_reward",
+            "reward_gold_fol_metric": "gold_fol_reward",
             "mlflow_disable_traces": disable_traces,
         }
     )

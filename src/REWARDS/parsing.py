@@ -14,18 +14,18 @@ HEADER_PATTERN = re.compile(
     r"\b(?:Premises|Conclusion)(?:\s+FOL)?:",
     flags=re.IGNORECASE,
 )
-LOGIC_OPERATOR_PATTERN = re.compile(r"(∀|∃|¬|→|∧|∨|⊕)")
+LOGIC_OPERATOR_PATTERN = re.compile(r"(∀|∃|¬|→|∧|∨|⊕|↔)")
 PREDICATE_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9_]*\s*\(([^()\n]*)\)")
 VALID_PREDICATE_PATTERN = re.compile(
     r"\b[A-Za-z][A-Za-z0-9_]*\s*"
     r"\(\s*[A-Za-z][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z][A-Za-z0-9_]*)*\s*\)"
 )
 BAD_SYMBOL_PATTERN = re.compile(
-    r"(\.|:|;|\"|'|`|\\|\[|\]|\{|\}|<|>|~|\^|&|\||=|\+|-|"
-    r"↔|⇔|⇒|↦|∈|∉|،)"
+    r"(\.|:|;|\"|'|`|\\|\[|\]|\{|\}|<|>|~|\^|&|\||\+|-|"
+    r"⇔|⇒|↦|∈|∉|،)"
 )
-BINARY_OPERATOR_PATTERN = re.compile(r"(→|∧|∨|⊕)")
-REPEATED_OPERATOR_PATTERN = re.compile(r"(→|∧|∨|⊕)\s*(→|∧|∨|⊕)")
+BINARY_OPERATOR_PATTERN = re.compile(r"(→|∧|∨|⊕|↔)")
+REPEATED_OPERATOR_PATTERN = re.compile(r"(→|∧|∨|⊕|↔)\s*(→|∧|∨|⊕|↔)")
 QUANTIFIER_PATTERN = re.compile(r"(∀|∃)\s*([A-Za-z][A-Za-z0-9_]*)")
 
 
@@ -158,9 +158,9 @@ def _operators_are_well_placed(text: str) -> bool:
         return False
     if BINARY_OPERATOR_PATTERN.search(stripped[-1:]):
         return False
-    if re.search(r"\(\s*(→|∧|∨|⊕)", stripped):
+    if re.search(r"\(\s*(→|∧|∨|⊕|↔)", stripped):
         return False
-    if re.search(r"(→|∧|∨|⊕)\s*\)", stripped):
+    if re.search(r"(→|∧|∨|⊕|↔)\s*\)", stripped):
         return False
 
     return True
