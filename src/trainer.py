@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import random
 import socket
@@ -27,7 +28,7 @@ import hydra
 _bootstrap_log("Importing torch")
 import torch
 _bootstrap_log("Importing datasets")
-from datasets import Dataset, disable_progress_bar, enable_progress_bar, load_dataset
+from datasets import disable_progress_bar, enable_progress_bar
 from hydra.utils import get_original_cwd
 from omegaconf import DictConfig, OmegaConf
 _bootstrap_log("Importing transformers")
@@ -39,21 +40,15 @@ _bootstrap_log("Importing reward modules")
 from REWARDS.logical_feedback import configure_reward_console
 from REWARDS.logical_feedback import logical_feedback_reward
 from REWARDS.mlflow_logging import configure_reward_logging, flush_reward_logging
+from autoformalization import TRAINER_KIND_GRPO
+from autoformalization import TRAINER_KIND_SFT
+from autoformalization import VALID_TRAINER_KINDS
+from autoformalization import prepare_dataset as _prepare_dataset
 _bootstrap_log("Finished trainer imports")
-
-
-VALID_LABELS = {"true", "false", "uncertain"}
-TRAINER_KIND_GRPO = "grpo"
-TRAINER_KIND_SFT = "sft"
-VALID_TRAINER_KINDS = {TRAINER_KIND_GRPO, TRAINER_KIND_SFT}
 
 
 def _log_stage(message: str) -> None:
     _bootstrap_log(message)
-
-
-def _normalize_label(value: str) -> str:
-    return value.strip().lower()
 
 
 def _set_seed(seed: int) -> None:
@@ -68,93 +63,6 @@ def _set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-
-def _build_prompt(example):
-    return (
-        "Translate natural-language premises and conclusion into first-order logic.\n"
-        "Return only the formalization. No explanation. No truth label.\n\n"
-        "Completion format:\n"
-        "Premises:\n"
-        "<one complete FOL premise per line>\n\n"
-        "Conclusion:\n"
-        "<one complete FOL conclusion>\n\n"
-        "Formula rules:\n"
-        "Use only these logical operators: ∀, ∃, ¬, →, ∧, ∨, ⊕.\n"
-        "Operator meanings: ∀ means for all; ∃ means there exists; ¬ means not; "
-        "→ means implies; ∧ means and; ∨ means inclusive or; ⊕ means exclusive or.\n"
-        "Do not use ↔, ⇔, ⇒, ∴, bullets, markdown, quotes, or extra labels.\n"
-        "Do not write chat-role words such as user, assistant, or system.\n"
-        "Predicate, variable, and constant names must use English letters, digits, or underscores.\n"
-        "Every line must be a complete formula with balanced parentheses.\n"
-        "Use commas only inside predicate arguments, never between formulas; use ∧ for and.\n"
-        "Stop immediately after the conclusion formula.\n\n"
-        "Example natural-language premises:\n"
-        "All eels are fish.\n"
-        "No fish are plants.\n"
-        "Everything displayed in the collection is either a plant or an animal.\n"
-        "All multicellular animals are not bacteria.\n"
-        "All animals displayed in the collection are multicellular.\n"
-        "A sea eel is displayed in the collection.\n"
-        "The sea eel is an eel or an animal or not a plant.\n\n"
-        "Example natural-language conclusion:\n"
-        "The sea eel is an eel.\n\n"
-        "Correct formalization for the example:\n"
-        "Premises:\n"
-        "∀x (Eel(x) → Fish(x))\n"
-        "∀x (Fish(x) → ¬Plant(x))\n"
-        "∀x (DisplayedIn(x, collection) → Plant(x) ⊕ Animal(x))\n"
-        "∀x (Multicellular(x) ∧ Animal(x) → ¬Bacteria(x))\n"
-        "∀x (DisplayedIn(x, collection) ∧ Animal(x) → Multicellular(x))\n"
-        "DisplayedIn(seaEel, collection)\n"
-        "Eel(seaEel) ∨ Animal(seaEel) ∨ ¬Plant(seaEel)\n\n"
-        "Conclusion:\n"
-        "Eel(seaEel)\n\n"
-        "Problem natural-language premises:\n"
-        f"{example['premises']}\n\n"
-        "Problem natural-language conclusion:\n"
-        f"{example['conclusion']}\n\n"
-        "Formalization:\n"
-        "Premises:\n"
-    )
-
-
-def _build_sft_completion(example: dict[str, Any]) -> str:
-    return (
-        f"{str(example['premises-FOL']).strip()}\n\n"
-        "Conclusion:\n"
-        f"{str(example['conclusion-FOL']).strip()}"
-    )
-
-
-def _prepare_dataset(path: str, trainer_kind: str) -> Dataset:
-    source_path = Path(path)
-    if not source_path.exists():
-        raise FileNotFoundError(f"Dataset file not found: {path}")
-
-    raw = load_dataset("json", data_files=str(source_path), split="train")
-
-    def _map_row(row: dict[str, Any]) -> dict[str, str]:
-        label = _normalize_label(str(row["label"]))
-        if label not in VALID_LABELS:
-            raise ValueError(
-                f"Unsupported label '{row['label']}'. "
-                f"Expected one of: {sorted(VALID_LABELS)}"
-            )
-        mapped_row = {
-            "prompt": _build_prompt(row),
-            "solution": _normalize_label(str(row["label"])),
-            "premises": row["premises"],
-            "conclusion": row["conclusion"],
-            "premises_fol_gold": row["premises-FOL"],
-            "conclusion_fol_gold": row["conclusion-FOL"],
-            "example_id": str(row.get("example_id", "")),
-        }
-        if trainer_kind == TRAINER_KIND_SFT:
-            mapped_row["completion"] = _build_sft_completion(row)
-        return mapped_row
-
-    return raw.map(_map_row, remove_columns=raw.column_names)
 
 
 def _resolve_runtime_device(cfg: DictConfig) -> str:
@@ -308,6 +216,52 @@ def _configure_reward_logging(cfg: DictConfig):
     )
 
     return logger
+
+
+def _mlflow_enabled(cfg: DictConfig) -> bool:
+    mlflow_cfg = cfg.trainer.get("mlflow", None)
+    return bool(mlflow_cfg) and bool(mlflow_cfg.get("enabled", True))
+
+
+def _configure_trainer_mlflow(cfg: DictConfig, trainer_kind: str) -> None:
+    if trainer_kind != TRAINER_KIND_SFT or not _mlflow_enabled(cfg):
+        return
+
+    mlflow_cfg = cfg.trainer.get("mlflow", {})
+    disable_traces = bool(mlflow_cfg.get("disable_traces", True))
+    if disable_traces:
+        _disable_mlflow_tracing()
+
+    os.environ["MLFLOW_TRACKING_URI"] = _resolve_mlflow_tracking_uri(mlflow_cfg)
+    os.environ["MLFLOW_EXPERIMENT_NAME"] = str(
+        mlflow_cfg.get("experiment_name", None) or cfg.experiment.name
+    )
+    os.environ.setdefault("MLFLOW_FLATTEN_PARAMS", "true")
+    os.environ.setdefault("HF_MLFLOW_LOG_ARTIFACTS", "false")
+
+    tags = _mlflow_tags(cfg, trainer_kind, disable_traces=disable_traces)
+    os.environ["MLFLOW_TAGS"] = json.dumps(tags)
+
+
+def _mlflow_tags(
+    cfg: DictConfig,
+    trainer_kind: str,
+    *,
+    disable_traces: bool,
+) -> dict[str, str]:
+    return {
+        "primary_metric": (
+            "eval_loss" if trainer_kind == TRAINER_KIND_SFT else "total_reward"
+        ),
+        "trainer_kind": trainer_kind,
+        "mlflow_tracing": "disabled" if disable_traces else "enabled",
+        "model": str(cfg.model.get("name", cfg.model.model_name_or_path)),
+        "trainer_output_dir": str(cfg.trainer.output_dir),
+        "hostname": socket.gethostname(),
+        "slurm_job_id": str(os.environ.get("SLURM_JOB_ID", "")),
+        "slurm_job_name": str(os.environ.get("SLURM_JOB_NAME", "")),
+        "slurm_partition": str(os.environ.get("SLURM_JOB_PARTITION", "")),
+    }
 
 
 def _configure_terminal_output(cfg: DictConfig, trainer_kind: str) -> None:
@@ -482,14 +436,39 @@ def _build_trainer_args_dict(
 
     if trainer_kind == TRAINER_KIND_GRPO:
         _add_generation_guards(trainer_args_dict, tokenizer)
+    elif _mlflow_enabled(cfg):
+        _add_mlflow_report_to(trainer_args_dict)
     _add_model_init_kwargs(trainer_args_dict, cfg)
 
     trainer_args_dict["output_dir"] = str(cfg.trainer.output_dir)
-    trainer_args_dict["run_name"] = str(cfg.experiment.name)
+    trainer_args_dict["run_name"] = (
+        _default_mlflow_run_name(cfg)
+        if _mlflow_enabled(cfg)
+        else str(cfg.experiment.name)
+    )
     trainer_args_dict["use_cpu"] = runtime_device == "cpu"
     trainer_args_dict["dataloader_pin_memory"] = runtime_device == "cuda"
 
     return trainer_args_dict
+
+
+def _add_mlflow_report_to(trainer_args_dict: dict[str, Any]) -> None:
+    report_to = trainer_args_dict.get("report_to", None)
+
+    if report_to is None:
+        trainer_args_dict["report_to"] = ["mlflow"]
+        return
+
+    if isinstance(report_to, str):
+        normalized = report_to.strip().lower()
+        if normalized in {"", "none", "null"}:
+            trainer_args_dict["report_to"] = ["mlflow"]
+        elif normalized != "mlflow":
+            trainer_args_dict["report_to"] = [report_to, "mlflow"]
+        return
+
+    if isinstance(report_to, list) and "mlflow" not in report_to:
+        trainer_args_dict["report_to"] = [*report_to, "mlflow"]
 
 
 @hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
@@ -502,8 +481,10 @@ def main(cfg: DictConfig) -> None:
     _configure_terminal_output(cfg, trainer_kind)
     if trainer_kind == TRAINER_KIND_GRPO:
         _configure_reward_logging(cfg)
-    elif bool(cfg.trainer.get("mlflow", {}).get("disable_traces", True)):
-        _disable_mlflow_tracing()
+    else:
+        _configure_trainer_mlflow(cfg, trainer_kind)
+        if bool(cfg.trainer.get("mlflow", {}).get("disable_traces", True)):
+            _disable_mlflow_tracing()
 
     _print_training_summary(cfg, runtime_device, trainer_kind)
 

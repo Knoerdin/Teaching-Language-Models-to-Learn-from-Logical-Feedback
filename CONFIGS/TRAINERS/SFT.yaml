@@ -6,6 +6,13 @@ device: auto
 terminal:
   show_dataset_progress: false
 
+mlflow:
+  enabled: true
+  disable_traces: true
+  tracking_uri: null
+  experiment_name: null
+  run_name: null
+
 trainer_cls:
   _target_: trl.SFTTrainer
 

@@ -34,6 +34,32 @@ Run the Qwen 3.5 9B SFT comparison config:
 python src/trainer.py TRAINERS@trainer=SFT_qwen3.5-9b MODELS@model=qwen3.5-9b
 ```
 
+SFT logging uses the same MLflow fallback as GRPO: config `tracking_uri`,
+then `MLFLOW_TRACKING_URI`, then the repo-local `mlruns/` directory. SFT logs
+trainer metrics such as loss and eval loss through the Transformers MLflow
+callback when `trainer.mlflow.enabled=true`.
+
+Evaluate GRPO and SFT autoformalizations against the FOLIO gold FOL fields:
+
+```bash
+python src/evaluate_autoformalization.py \
+  --dataset DATA/FOLIO/folio_test.jsonl \
+  --model grpo=outputs/grpo_qwen3.5-9b \
+  --model sft=outputs/sft_qwen3.5-9b \
+  --output-dir outputs/evaluations/qwen3.5-9b
+```
+
+The main score is normalized exact-match accuracy for `premises-FOL` plus
+`conclusion-FOL`; the script also reports premise-order-insensitive accuracy,
+parse rate, conclusion accuracy, and premise macro F1.
+
+When `--output-dir` is set, the evaluator also writes Markdown reports under
+`OUTPUT_DIR/eval_reports/`, separated into `grpo/` and `sft/` subfolders when
+the model name or path indicates the trainer type. Each model report includes
+metric tables plus examples of fully correct and wrong autoformalizations. Use
+`--report-dir` to choose a different report location and `--report-examples` to
+change how many examples are shown per section.
+
 On SLURM, submit and automatically tail the matching comparison job:
 
 ```bash
