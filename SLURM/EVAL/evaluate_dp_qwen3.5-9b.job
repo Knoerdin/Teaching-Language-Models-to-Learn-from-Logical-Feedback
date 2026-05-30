@@ -50,6 +50,30 @@ export TOKENIZERS_PARALLELISM=false
 export HF_HUB_DISABLE_TELEMETRY=1
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
+if [ -z "${VAMPIRE_BIN:-}" ]; then
+  for candidate in \
+    "$PROJECT_DIR/../vampire-src/vampire" \
+    "$PROJECT_DIR/../vampire-src/bin/vampire" \
+    "$PROJECT_DIR/../vampire-src/build/vampire" \
+    "$PROJECT_DIR/../vampire-src/build/bin/vampire"; do
+    if [ -x "$candidate" ]; then
+      export VAMPIRE_BIN="$candidate"
+      break
+    fi
+  done
+fi
+
+if [ -z "${VAMPIRE_BIN:-}" ] || [ ! -x "$VAMPIRE_BIN" ]; then
+  echo "Could not find an executable Vampire binary."
+  echo "Set VAMPIRE_BIN=/path/to/vampire when submitting, or build Vampire under ../vampire-src."
+  if [ -d "$PROJECT_DIR/../vampire-src" ]; then
+    echo "Executable-looking files under ../vampire-src:"
+    find "$PROJECT_DIR/../vampire-src" -maxdepth 4 -type f -perm -u=x -print | sort | head -50
+  fi
+  exit 1
+fi
+echo "Using Vampire: $VAMPIRE_BIN"
+
 MODEL_NAME="${MODEL_NAME:-grpo}"
 MODEL_PATH="${MODEL_PATH:-outputs/grpo_qwen3.5-9b/checkpoint-3000}"
 DATASET="${DATASET:-DATA/FOLIO/folio_test.jsonl}"

@@ -4,6 +4,7 @@ import io
 import os
 import warnings
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 
 try:
     from langchain_core._api.deprecation import LangChainPendingDeprecationWarning
@@ -87,6 +88,7 @@ def get_solver():
 
     parser = TPTPParser(convert=True, feedback_msg=True)
     solver = VampireReasoner()
+    _configure_vampire_executable(solver)
     linter = FOLLinter()
     tests = []
 
@@ -97,6 +99,23 @@ def get_solver():
         tests=tests,
         inconsistent_as_error=True,
     )
+
+
+def _configure_vampire_executable(solver) -> None:
+    executable = os.environ.get("VAMPIRE_BIN") or os.environ.get("VAMPIRE_EXECUTABLE")
+    if not executable:
+        return
+
+    executable_path = Path(executable).expanduser()
+    if not executable_path.exists():
+        raise SolverUnavailableError(
+            f"Configured Vampire executable does not exist: {executable_path}"
+        )
+    if not os.access(executable_path, os.X_OK):
+        raise SolverUnavailableError(
+            f"Configured Vampire executable is not executable: {executable_path}"
+        )
+    solver.vampire_exe = executable_path
 
 
 def evaluate_correctness(
