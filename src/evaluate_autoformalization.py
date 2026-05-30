@@ -413,6 +413,19 @@ def first_model_device(model: Any):
 def load_tokenizer(model_path: str, *, trust_remote_code: bool):
     from transformers import AutoTokenizer
 
+    if is_peft_adapter(model_path):
+        from peft import PeftConfig
+
+        peft_config = PeftConfig.from_pretrained(model_path)
+        tokenizer = AutoTokenizer.from_pretrained(
+            peft_config.base_model_name_or_path,
+            trust_remote_code=trust_remote_code,
+        )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "left"
+        return tokenizer
+
     try:
         tokenizer = AutoTokenizer.from_pretrained(
             model_path,
