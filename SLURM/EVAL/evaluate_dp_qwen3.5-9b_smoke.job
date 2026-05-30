@@ -1,0 +1,131 @@
+#!/bin/bash
+#SBATCH --job-name=eval_dp_qwen35_9b_smoke
+#SBATCH --output=SLURM/logs/EVAL/job_%j.out
+#SBATCH --error=SLURM/logs/EVAL/job_%j.out
+#SBATCH --time=01:00:00
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=180G
+
+set -euo pipefail
+
+echo "[$(date)] Starting ${SLURM_JOB_NAME:-job} ${SLURM_JOB_ID:-unknown} on $(hostname)"
+echo "Submit directory: ${SLURM_SUBMIT_DIR:-unknown}"
+
+module purge
+module load 2024
+module load Python/3.12.3-GCCcore-13.3.0
+
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+PROJECT_DIR="$SUBMIT_DIR"
+while [ "$PROJECT_DIR" != "/" ] && [ ! -f "$PROJECT_DIR/pyproject.toml" ]; do
+  PROJECT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+done
+
+if [ ! -f "$PROJECT_DIR/pyproject.toml" ]; then
+  echo "Could not find project directory from submit directory: $SUBMIT_DIR"
+  echo "Submit from the repo root, SLURM directory, or a SLURM job subdirectory."
+  exit 1
+fi
+
+echo "Project directory: $PROJECT_DIR"
+cd "$PROJECT_DIR"
+
+if [ ! -f .venv/bin/activate ]; then
+  echo "No .venv found. Prepare the Snellius evaluation environment first."
+  exit 1
+fi
+source .venv/bin/activate
+
+export PYTHONUNBUFFERED=1
+export MLFLOW_TRACE_SAMPLING_RATIO="${MLFLOW_TRACE_SAMPLING_RATIO:-0.0}"
+export MLFLOW_ENABLE_ASYNC_TRACE_LOGGING="${MLFLOW_ENABLE_ASYNC_TRACE_LOGGING:-false}"
+export USE_TF=0
+export USE_FLAX=0
+export USE_JAX=0
+export TRANSFORMERS_NO_TF=1
+export TRANSFORMERS_NO_FLAX=1
+export TOKENIZERS_PARALLELISM=false
+export HF_HUB_DISABLE_TELEMETRY=1
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
+MODEL_NAME="${MODEL_NAME:-grpo}"
+MODEL_PATH="${MODEL_PATH:-outputs/grpo_qwen3.5-9b/checkpoint-3000}"
+DATASET="${DATASET:-DATA/FOLIO/folio_test.jsonl}"
+OUTPUT_DIR="${OUTPUT_DIR:-outputs/evaluations/qwen3.5-9b-dp-smoke}"
+PATHS="${PATHS:-2}"
+REPAIR_ROUNDS="${REPAIR_ROUNDS:-0}"
+LIMIT="${LIMIT:-2}"
+BATCH_SIZE="${BATCH_SIZE:-1}"
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-256}"
+DRAFT_MAX_NEW_TOKENS="${DRAFT_MAX_NEW_TOKENS:-384}"
+DEVICE="${DEVICE:-auto}"
+TORCH_DTYPE="${TORCH_DTYPE:-auto}"
+
+echo "Python: $(command -v python)"
+python --version
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+nvidia-smi
+free -h
+
+echo "Checking evaluation environment"
+python - <<'PY'
+import importlib.metadata as md
+import importlib.util
+import agent_reasoning
+
+print("agent_reasoning:", agent_reasoning.__file__)
+print("pipeline:", importlib.util.find_spec("agent_reasoning.pipeline"))
+print("symbolic_solver:", importlib.util.find_spec("agent_reasoning.symbolic_solver"))
+print("antlr4-python3-runtime:", md.version("antlr4-python3-runtime"))
+PY
+
+PYTHONPATH=src python - <<'PY'
+from REWARDS.proving import get_solver
+
+solver = get_solver()
+print("solver:", type(solver))
+PY
+
+if [ ! -e "$MODEL_PATH" ]; then
+  echo "Model path does not exist: $MODEL_PATH"
+  exit 1
+fi
+
+if [ ! -f "$MODEL_PATH/adapter_config.json" ] && [ ! -f "$MODEL_PATH/config.json" ]; then
+  echo "Model path is not a PEFT adapter or full HF model directory: $MODEL_PATH"
+  echo "Expected adapter_config.json or config.json."
+  echo "Files under model path:"
+  find "$MODEL_PATH" -maxdepth 1 -type f -printf "%f\n" | sort
+  exit 1
+fi
+
+mkdir -p "$OUTPUT_DIR"
+
+ARGS=(
+  src/evaluate_autoformalization.py
+  --dataset "$DATASET"
+  --model "${MODEL_NAME}=${MODEL_PATH}"
+  --draft-and-prune
+  --paths "$PATHS"
+  --repair-rounds "$REPAIR_ROUNDS"
+  --run-prover
+  --batch-size "$BATCH_SIZE"
+  --max-new-tokens "$MAX_NEW_TOKENS"
+  --draft-max-new-tokens "$DRAFT_MAX_NEW_TOKENS"
+  --device "$DEVICE"
+  --torch-dtype "$TORCH_DTYPE"
+  --output-dir "$OUTPUT_DIR"
+)
+
+if [ -n "$LIMIT" ]; then
+  ARGS+=(--limit "$LIMIT")
+fi
+
+echo "[$(date)] Launching D&P smoke evaluation"
+printf 'Command: python -u'
+printf ' %q' "${ARGS[@]}"
+printf '\n'
+python -u "${ARGS[@]}"
+echo "[$(date)] Evaluation finished"

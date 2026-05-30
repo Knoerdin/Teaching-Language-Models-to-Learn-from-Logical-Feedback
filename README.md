@@ -86,6 +86,21 @@ hit rate, abstention rate, tie rate, and the vote counts/path summaries in the
 prediction JSONL. Invalid or unparseable FOL paths are counted as pruned, not as
 unknown labels.
 
+On Snellius, run D&P evaluation through SLURM instead of the login node:
+
+```bash
+SLURM/submit_and_tail.sh EVAL/evaluate_dp_qwen3.5-9b_smoke.job
+SLURM/submit_and_tail.sh EVAL/evaluate_dp_qwen3.5-9b.job
+```
+
+Both jobs default to `outputs/grpo_qwen3.5-9b/checkpoint-3000`. Override the
+model from `sbatch` when needed, for example:
+
+```bash
+sbatch --export=ALL,MODEL_NAME=sft,MODEL_PATH=outputs/sft_qwen3.5-9b/checkpoint-3000 \
+  SLURM/EVAL/evaluate_dp_qwen3.5-9b_smoke.job
+```
+
 When `--output-dir` is set, the evaluator also writes Markdown reports under
 `OUTPUT_DIR/eval_reports/`, separated into `grpo/` and `sft/` subfolders when
 the model name or path indicates the trainer type. Each model report includes

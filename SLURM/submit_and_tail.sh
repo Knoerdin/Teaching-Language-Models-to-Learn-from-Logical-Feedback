@@ -42,6 +42,9 @@ job_group_for_file() {
     GRPO/*)
       printf 'GRPO\n'
       ;;
+    EVAL/*)
+      printf 'EVAL\n'
+      ;;
     *)
       printf 'misc\n'
       ;;
