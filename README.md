@@ -39,23 +39,52 @@ then `MLFLOW_TRACKING_URI`, then the repo-local `mlruns/` directory. SFT logs
 trainer metrics such as loss and eval loss through the Transformers MLflow
 callback when `trainer.mlflow.enabled=true`.
 
+The trainer treats `trainer.output_dir` as an experiment-family directory.
+Every run writes checkpoints and the final adapter to a fresh run subdirectory:
+on SLURM this is `trainer.output_dir/slurm-$SLURM_JOB_ID`; otherwise it uses the
+Hydra timestamped run directory. The concrete run path is printed as
+`Trainer output dir for this run:` at startup.
+
 Evaluate GRPO and SFT autoformalizations against the FOLIO gold FOL fields:
 
 ```bash
 python src/evaluate_autoformalization.py \
   --dataset DATA/FOLIO/folio_test.jsonl \
-  --model grpo=outputs/grpo_qwen3.5-9b \
-  --model sft=outputs/sft_qwen3.5-9b \
+  --model grpo=outputs/grpo_qwen3.5-9b/slurm-<grpo-job-id> \
+  --model sft=outputs/sft_qwen3.5-9b/slurm-<sft-job-id> \
   --output-dir outputs/evaluations/qwen3.5-9b
 ```
 
-The prompt is schema-conditioned from the gold FOL inventory: each example
-includes the allowed predicate signatures and constants/literals. The main
-score is normalized exact-match accuracy for `premises-FOL` plus
-`conclusion-FOL`; the script also reports premise-order-insensitive accuracy,
-parse rate, conclusion accuracy, premise macro F1, schema predicate/constant
-F1, and evaluation-only postprocessing counts. Pass `--no-postprocess` to score
-raw generations without casing/junk cleanup.
+By default the evaluator uses an autonomous prompt: the model sees only the
+natural-language premises and conclusion, not the per-example gold predicate
+inventory. The main formalization score is normalized exact-match accuracy for
+`premises-FOL` plus `conclusion-FOL`; the script also reports
+premise-order-insensitive accuracy, parse rate, conclusion accuracy, premise
+macro F1, schema predicate/constant F1, and optional prover label accuracy.
+Use `--include-gold-schema` only to reproduce the older schema-conditioned
+setup. Use `--postprocess` only for diagnostic cleanup, because it canonicalizes
+against gold FOL symbols.
+
+To run a Draft-and-Prune style evaluation, sample multiple natural-language
+translation plans, generate one deterministic FOL candidate from each plan,
+prune candidates that the theorem prover cannot execute, and majority-vote the
+surviving prover labels:
+
+```bash
+python src/evaluate_autoformalization.py \
+  --dataset DATA/FOLIO/folio_test.jsonl \
+  --model grpo=outputs/grpo_qwen3.5-9b/slurm-<grpo-job-id> \
+  --draft-and-prune \
+  --paths 20 \
+  --repair-rounds 2 \
+  --run-prover \
+  --output-dir outputs/evaluations/qwen3.5-9b-dp
+```
+
+Draft-and-Prune reports `dp_label_accuracy`, execution rate, path accuracy,
+hit rate, abstention rate, tie rate, and the vote counts/path summaries in the
+prediction JSONL. Invalid or unparseable FOL paths are counted as pruned, not as
+unknown labels.
 
 When `--output-dir` is set, the evaluator also writes Markdown reports under
 `OUTPUT_DIR/eval_reports/`, separated into `grpo/` and `sft/` subfolders when

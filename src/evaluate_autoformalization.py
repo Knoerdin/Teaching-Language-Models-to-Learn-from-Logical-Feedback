@@ -5,6 +5,7 @@ from collections import Counter
 import csv
 from dataclasses import dataclass
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -15,7 +16,8 @@ from REWARDS.fol_schema import gold_fol_reward as score_gold_fol_reward
 from REWARDS.fol_schema import postprocess_formalization
 from REWARDS.fol_schema import schema_violations
 from REWARDS.formatting import extract_formalization
-from autoformalization import build_prompt, normalize_label
+from autoformalization import build_plan_prompt, build_prompt, build_repair_prompt
+from autoformalization import normalize_label
 
 
 os.environ.setdefault("USE_TF", "0")
@@ -36,6 +38,23 @@ REQUIRED_DATASET_COLUMNS = {
 }
 ARROW_ALIASES = ("->", "=>", "⇒")
 BICONDITIONAL_ALIASES = ("⇔", "<->")
+DATASET_TO_SOLVER_LABEL = {
+    "true": "TRUE",
+    "false": "FALSE",
+    "uncertain": "UNKNOWN",
+}
+SOLVER_TO_DATASET_LABEL = {
+    solver_label: dataset_label
+    for dataset_label, solver_label in DATASET_TO_SOLVER_LABEL.items()
+}
+DP_LABELS = tuple(DATASET_TO_SOLVER_LABEL)
+UNEXECUTABLE_PROVER_STATUSES = {
+    "not_parsed",
+    "parse_error",
+    "exception",
+    "invalid_label",
+    "all_paths_pruned",
+}
 
 
 @dataclass(frozen=True)
@@ -135,12 +154,67 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--include-gold-schema",
+        action="store_true",
+        help=(
+            "Include the per-example predicate/constant schema derived from gold FOL. "
+            "This reproduces the older schema-conditioned setup and is intentionally "
+            "off by default for autonomous autoformalization."
+        ),
+    )
+    parser.add_argument(
+        "--draft-and-prune",
+        action="store_true",
+        help=(
+            "Use a Draft-and-Prune style inference loop: sample multiple natural-"
+            "language plans, generate one FOL formalization per plan, prune paths "
+            "that are not valid solver inputs, and majority-vote solver labels."
+        ),
+    )
+    parser.add_argument(
+        "--paths",
+        type=int,
+        default=20,
+        help="Number of draft/formalization paths for --draft-and-prune.",
+    )
+    parser.add_argument(
+        "--draft-max-new-tokens",
+        type=int,
+        default=384,
+        help="Maximum new tokens for each drafted plan.",
+    )
+    parser.add_argument(
+        "--draft-temperature",
+        type=float,
+        default=1.0,
+        help="Sampling temperature for drafted plans.",
+    )
+    parser.add_argument(
+        "--formalization-temperature",
+        type=float,
+        default=None,
+        help=(
+            "Temperature for formalization generation. Defaults to --temperature "
+            "for one-step evaluation and 0.0 for --draft-and-prune."
+        ),
+    )
+    parser.add_argument(
+        "--repair-rounds",
+        type=int,
+        default=2,
+        help=(
+            "Maximum solver-feedback repair rounds per Draft-and-Prune path. "
+            "Only used with --draft-and-prune."
+        ),
+    )
+    parser.add_argument(
         "--postprocess",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help=(
             "Apply evaluation-only cleanup before scoring: trim trailing junk, "
-            "canonicalize schema casing, and flag schema violations."
+            "canonicalize schema casing, and flag schema violations. This uses "
+            "gold FOL symbols, so it is off by default."
         ),
     )
     parser.add_argument(
@@ -463,6 +537,26 @@ def generate_batch(
     return tokenizer.batch_decode(new_tokens, skip_special_tokens=True)
 
 
+def generate_in_chunks(
+    model: Any,
+    tokenizer: Any,
+    prompts: list[str],
+    config: GenerationConfig,
+) -> list[str]:
+    outputs = []
+    batch_size = max(1, config.batch_size)
+    for start in range(0, len(prompts), batch_size):
+        outputs.extend(
+            generate_batch(
+                model,
+                tokenizer,
+                prompts[start : start + batch_size],
+                config,
+            )
+        )
+    return outputs
+
+
 def score_prediction(
     record: dict[str, Any],
     generation: str,
@@ -601,6 +695,310 @@ def run_prover_score(
     }
 
 
+def solver_prediction_to_dataset_label(prediction: Any) -> str | None:
+    return SOLVER_TO_DATASET_LABEL.get(str(prediction or "").strip().upper())
+
+
+def dataset_label_to_solver_prediction(label: str | None) -> str | None:
+    if label is None:
+        return None
+    return DATASET_TO_SOLVER_LABEL.get(label)
+
+
+def annotate_path_result(result: dict[str, Any], record: dict[str, Any]) -> None:
+    path_label = solver_prediction_to_dataset_label(result.get("prover_prediction"))
+    status = str(result.get("prover_status") or "")
+    executable = path_label is not None and status not in UNEXECUTABLE_PROVER_STATUSES
+    result["dp_path_label"] = path_label
+    result["dp_path_executable"] = executable
+    result["dp_path_label_correct"] = (
+        executable and path_label == normalize_label(str(record["label"]))
+    )
+
+
+def path_is_executable(result: dict[str, Any]) -> bool:
+    return bool(result.get("dp_path_executable"))
+
+
+def render_broken_formalization(result: dict[str, Any]) -> str:
+    raw_premises = result.get("raw_predicted_premises")
+    raw_conclusion = result.get("raw_predicted_conclusion")
+    if raw_premises is not None and raw_conclusion is not None:
+        return f"Premises:\n{raw_premises}\n\nConclusion:\n{raw_conclusion}"
+    return str(result.get("generation") or "")
+
+
+def score_draft_path(
+    record: dict[str, Any],
+    generation: str,
+    *,
+    path_index: int,
+    draft_plan: str,
+    apply_postprocessing: bool,
+    repair_round: int = 0,
+    prompt: str | None = None,
+    include_prompt: bool = False,
+) -> dict[str, Any]:
+    result = score_prediction(
+        record,
+        generation,
+        run_prover=True,
+        apply_postprocessing=apply_postprocessing,
+    )
+    result["dp_path_index"] = path_index
+    result["draft_plan"] = draft_plan
+    result["repair_round"] = repair_round
+    annotate_path_result(result, record)
+    if include_prompt and prompt is not None:
+        result["prompt"] = prompt
+    return result
+
+
+def repair_draft_path(
+    model: Any,
+    tokenizer: Any,
+    record: dict[str, Any],
+    path_result: dict[str, Any],
+    *,
+    draft_plan: str,
+    config: GenerationConfig,
+    max_rounds: int,
+    apply_postprocessing: bool,
+    include_prompt: bool,
+) -> dict[str, Any]:
+    result = path_result
+    repair_attempts = []
+    for repair_round in range(1, max(0, max_rounds) + 1):
+        if path_is_executable(result):
+            break
+
+        repair_prompt = build_repair_prompt(
+            record,
+            broken_formalization=render_broken_formalization(result),
+            solver_feedback=result.get("prover_feedback"),
+            draft_plan=draft_plan,
+        )
+        repaired_generation = generate_batch(
+            model,
+            tokenizer,
+            [repair_prompt],
+            config,
+        )[0]
+        repair_attempts.append(
+            {
+                "round": repair_round,
+                "previous_status": result.get("prover_status"),
+                "generation": repaired_generation,
+            }
+        )
+        result = score_draft_path(
+            record,
+            repaired_generation,
+            path_index=int(path_result["dp_path_index"]),
+            draft_plan=draft_plan,
+            apply_postprocessing=apply_postprocessing,
+            repair_round=repair_round,
+            prompt=repair_prompt,
+            include_prompt=include_prompt,
+        )
+
+    result["repair_attempts"] = repair_attempts
+    return result
+
+
+def select_majority_label(
+    path_results: list[dict[str, Any]],
+) -> tuple[str | None, bool, Counter[str]]:
+    vote_counts = Counter(
+        result["dp_path_label"]
+        for result in path_results
+        if path_is_executable(result) and result.get("dp_path_label") is not None
+    )
+    if not vote_counts:
+        return None, False, vote_counts
+
+    max_count = max(vote_counts.values())
+    tied_labels = {
+        label for label, count in vote_counts.items() if count == max_count
+    }
+    tie = len(tied_labels) > 1
+
+    for result in path_results:
+        label = result.get("dp_path_label")
+        if path_is_executable(result) and label in tied_labels:
+            return str(label), tie, vote_counts
+    return None, tie, vote_counts
+
+
+def normalized_vote_entropy(vote_counts: Counter[str]) -> float:
+    total = sum(vote_counts.values())
+    if total <= 0:
+        return 0.0
+    entropy = 0.0
+    for count in vote_counts.values():
+        probability = count / total
+        entropy -= probability * math.log(probability)
+    return entropy / math.log(len(DP_LABELS))
+
+
+def compact_path_result(result: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "dp_path_index",
+        "draft_plan",
+        "generation",
+        "raw_predicted_premises",
+        "raw_predicted_conclusion",
+        "predicted_premises",
+        "predicted_conclusion",
+        "parsed",
+        "dp_path_executable",
+        "dp_path_label",
+        "dp_path_label_correct",
+        "prover_status",
+        "prover_prediction",
+        "prover_feedback",
+        "repair_round",
+        "repair_attempts",
+        "postprocessing_changed",
+        "invalid_predicates",
+        "invalid_constants",
+        "premise_f1",
+        "gold_fol_reward",
+    )
+    return {key: result.get(key) for key in keys if key in result}
+
+
+def aggregate_draft_and_prune_result(
+    record: dict[str, Any],
+    path_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    predicted_label, tie, vote_counts = select_majority_label(path_results)
+    surviving_paths = [result for result in path_results if path_is_executable(result)]
+    gold_label = normalize_label(str(record["label"]))
+    selected_path = next(
+        (
+            result
+            for result in path_results
+            if path_is_executable(result)
+            and result.get("dp_path_label") == predicted_label
+        ),
+        path_results[0],
+    )
+
+    result = dict(selected_path)
+    correct_paths = sum(
+        1 for path_result in path_results if path_result["dp_path_label_correct"]
+    )
+    repaired_paths = sum(
+        1 for path_result in path_results if int(path_result.get("repair_round", 0)) > 0
+    )
+    pruned_status_counts = Counter(
+        str(path_result.get("prover_status") or "unknown")
+        for path_result in path_results
+        if not path_is_executable(path_result)
+    )
+    path_status_counts = Counter(
+        str(path_result.get("prover_status") or "unknown")
+        for path_result in path_results
+    )
+    dp_label_correct = predicted_label == gold_label
+
+    result.update(
+        {
+            "draft_and_prune": True,
+            "dp_total_paths": len(path_results),
+            "dp_surviving_paths": len(surviving_paths),
+            "dp_pruned_paths": len(path_results) - len(surviving_paths),
+            "dp_correct_paths": correct_paths,
+            "dp_repaired_paths": repaired_paths,
+            "dp_executable": bool(surviving_paths),
+            "dp_prediction": predicted_label,
+            "dp_solver_prediction": dataset_label_to_solver_prediction(predicted_label),
+            "dp_label_correct": dp_label_correct,
+            "dp_hit": correct_paths > 0,
+            "dp_tie": tie,
+            "dp_abstained": predicted_label is None,
+            "dp_vote_counts": dict(sorted(vote_counts.items())),
+            "dp_vote_entropy": normalized_vote_entropy(vote_counts),
+            "dp_selected_path_index": result.get("dp_path_index"),
+            "dp_path_status_counts": dict(sorted(path_status_counts.items())),
+            "dp_pruned_status_counts": dict(sorted(pruned_status_counts.items())),
+            "dp_paths": [compact_path_result(path_result) for path_result in path_results],
+            "prover_status": (
+                "correct"
+                if dp_label_correct
+                else "incorrect"
+                if predicted_label is not None
+                else "all_paths_pruned"
+            ),
+            "prover_prediction": dataset_label_to_solver_prediction(predicted_label),
+            "prover_label_correct": dp_label_correct,
+            "prover_feedback": None,
+        }
+    )
+    return result
+
+
+def evaluate_record_draft_and_prune(
+    model: Any,
+    tokenizer: Any,
+    record: dict[str, Any],
+    args: argparse.Namespace,
+    draft_config: GenerationConfig,
+    formalization_config: GenerationConfig,
+) -> dict[str, Any]:
+    plan_prompt = build_plan_prompt(record)
+    plan_prompts = [plan_prompt] * args.paths
+    draft_plans = generate_in_chunks(model, tokenizer, plan_prompts, draft_config)
+    formalization_prompts = [
+        build_prompt(
+            record,
+            include_gold_schema=args.include_gold_schema,
+            draft_plan=draft_plan,
+        )
+        for draft_plan in draft_plans
+    ]
+    generations = generate_in_chunks(
+        model,
+        tokenizer,
+        formalization_prompts,
+        formalization_config,
+    )
+
+    path_results = []
+    for path_index, (draft_plan, formalization_prompt, generation) in enumerate(
+        zip(draft_plans, formalization_prompts, generations, strict=True),
+        start=1,
+    ):
+        path_result = score_draft_path(
+            record,
+            generation,
+            path_index=path_index,
+            draft_plan=draft_plan,
+            apply_postprocessing=args.postprocess,
+            prompt=formalization_prompt,
+            include_prompt=args.include_prompt,
+        )
+        if not path_is_executable(path_result) and args.repair_rounds > 0:
+            path_result = repair_draft_path(
+                model,
+                tokenizer,
+                record,
+                path_result,
+                draft_plan=draft_plan,
+                config=formalization_config,
+                max_rounds=args.repair_rounds,
+                apply_postprocessing=args.postprocess,
+                include_prompt=args.include_prompt,
+            )
+        path_results.append(path_result)
+
+    result = aggregate_draft_and_prune_result(record, path_results)
+    if args.include_prompt:
+        result["plan_prompt"] = plan_prompt
+    return result
+
+
 def summarize_results(
     spec: ModelSpec,
     dataset_path: str,
@@ -627,6 +1025,9 @@ def summarize_results(
         "max_input_tokens": generation_config.max_input_tokens,
         "temperature": generation_config.temperature,
         "top_p": generation_config.top_p,
+        "include_gold_schema": any(
+            result.get("include_gold_schema", False) for result in results
+        ),
         "postprocess": any(result.get("postprocessed", False) for result in results),
         "parse_rate": rate("parsed"),
         "autoformalization_accuracy": rate("joint_ordered_exact"),
@@ -657,7 +1058,10 @@ def summarize_results(
 
     if run_prover:
         prover_status_counts = Counter(result["prover_status"] for result in results)
-        attempted = total - prover_status_counts.get("not_parsed", 0)
+        attempted = total - sum(
+            prover_status_counts.get(status, 0)
+            for status in UNEXECUTABLE_PROVER_STATUSES
+        )
         correct = sum(1 for result in results if result["prover_label_correct"])
         metrics["prover_label_accuracy"] = correct / total
         metrics["prover_label_accuracy_on_parsed"] = (
@@ -665,6 +1069,55 @@ def summarize_results(
         )
         metrics["prover_attempted"] = attempted
         metrics["prover_status_counts"] = dict(sorted(prover_status_counts.items()))
+
+    if any(result.get("draft_and_prune", False) for result in results):
+        total_paths = sum(int(result.get("dp_total_paths", 0)) for result in results)
+        surviving_paths = sum(
+            int(result.get("dp_surviving_paths", 0)) for result in results
+        )
+        correct_paths = sum(
+            int(result.get("dp_correct_paths", 0)) for result in results
+        )
+        executable_results = [
+            result for result in results if result.get("dp_executable", False)
+        ]
+        dp_correct = sum(1 for result in results if result.get("dp_label_correct"))
+        dp_path_status_counts = Counter()
+        dp_pruned_status_counts = Counter()
+        for result in results:
+            dp_path_status_counts.update(result.get("dp_path_status_counts", {}))
+            dp_pruned_status_counts.update(result.get("dp_pruned_status_counts", {}))
+
+        metrics.update(
+            {
+                "draft_and_prune": True,
+                "dp_paths": results[0].get("dp_total_paths", 0),
+                "dp_total_paths": total_paths,
+                "dp_surviving_paths": surviving_paths,
+                "dp_path_execution_rate": (
+                    surviving_paths / total_paths if total_paths else 0.0
+                ),
+                "dp_execution_rate": rate("dp_executable"),
+                "dp_label_accuracy": dp_correct / total,
+                "dp_label_accuracy_on_executable": (
+                    dp_correct / len(executable_results)
+                    if executable_results
+                    else 0.0
+                ),
+                "dp_path_accuracy": (
+                    correct_paths / total_paths if total_paths else 0.0
+                ),
+                "dp_hit_rate": rate("dp_hit"),
+                "dp_abstention_rate": rate("dp_abstained"),
+                "dp_tie_rate": rate("dp_tie"),
+                "dp_avg_surviving_paths": surviving_paths / total,
+                "dp_avg_vote_entropy": mean(
+                    result.get("dp_vote_entropy", 0.0) for result in results
+                ),
+                "dp_path_status_counts": dict(sorted(dp_path_status_counts.items())),
+                "dp_pruned_status_counts": dict(sorted(dp_pruned_status_counts.items())),
+            }
+        )
 
     return metrics
 
@@ -691,34 +1144,71 @@ def evaluate_model(
     )
 
     results = []
-    for start in range(0, len(records), generation_config.batch_size):
-        end = min(start + generation_config.batch_size, len(records))
-        batch = records[start:end]
-        prompts = [build_prompt(record) for record in batch]
-        generations = generate_batch(model, tokenizer, prompts, generation_config)
-        for record, prompt, generation in zip(batch, prompts, generations):
-            result = score_prediction(
+    if args.draft_and_prune:
+        draft_config = GenerationConfig(
+            batch_size=generation_config.batch_size,
+            max_new_tokens=args.draft_max_new_tokens,
+            max_input_tokens=generation_config.max_input_tokens,
+            temperature=args.draft_temperature,
+            top_p=generation_config.top_p,
+        )
+        for index, record in enumerate(records, start=1):
+            result = evaluate_record_draft_and_prune(
+                model,
+                tokenizer,
                 record,
-                generation,
-                run_prover=args.run_prover,
-                apply_postprocessing=args.postprocess,
+                args,
+                draft_config,
+                generation_config,
             )
             result["model_name"] = spec.name
             result["model_path"] = spec.path
-            if args.include_prompt:
-                result["prompt"] = prompt
+            result["include_gold_schema"] = args.include_gold_schema
             results.append(result)
 
-        if args.log_every > 0 and (
-            end == len(records) or end % args.log_every == 0
-        ):
-            print(f"  {spec.name}: evaluated {end}/{len(records)}", flush=True)
+            if args.log_every > 0 and (
+                index == len(records) or index % args.log_every == 0
+            ):
+                print(
+                    f"  {spec.name}: evaluated {index}/{len(records)}",
+                    flush=True,
+                )
+    else:
+        for start in range(0, len(records), generation_config.batch_size):
+            end = min(start + generation_config.batch_size, len(records))
+            batch = records[start:end]
+            prompts = [
+                build_prompt(
+                    record,
+                    include_gold_schema=args.include_gold_schema,
+                )
+                for record in batch
+            ]
+            generations = generate_batch(model, tokenizer, prompts, generation_config)
+            for record, prompt, generation in zip(batch, prompts, generations):
+                result = score_prediction(
+                    record,
+                    generation,
+                    run_prover=args.run_prover,
+                    apply_postprocessing=args.postprocess,
+                )
+                result["model_name"] = spec.name
+                result["model_path"] = spec.path
+                result["include_gold_schema"] = args.include_gold_schema
+                if args.include_prompt:
+                    result["prompt"] = prompt
+                results.append(result)
+
+            if args.log_every > 0 and (
+                end == len(records) or end % args.log_every == 0
+            ):
+                print(f"  {spec.name}: evaluated {end}/{len(records)}", flush=True)
 
     metrics = summarize_results(
         spec,
         args.dataset,
         results,
-        run_prover=args.run_prover,
+        run_prover=args.run_prover or args.draft_and_prune,
         generation_config=generation_config,
     )
 
@@ -816,10 +1306,16 @@ def build_model_report_markdown(
     examples_per_section: int,
 ) -> str:
     examples_per_section = max(0, examples_per_section)
-    correct_examples = [
-        result for result in predictions if result["joint_unordered_exact"]
-    ][:examples_per_section]
-    wrong_examples = select_wrong_examples(predictions, examples_per_section)
+    if metrics.get("draft_and_prune", False):
+        correct_examples = [
+            result for result in predictions if result.get("dp_label_correct", False)
+        ][:examples_per_section]
+        wrong_examples = select_wrong_dp_examples(predictions, examples_per_section)
+    else:
+        correct_examples = [
+            result for result in predictions if result["joint_unordered_exact"]
+        ][:examples_per_section]
+        wrong_examples = select_wrong_examples(predictions, examples_per_section)
     model_name = str(metrics["model_name"])
     trainer_kind = str(metrics["trainer_kind"]).upper()
 
@@ -840,7 +1336,10 @@ def build_model_report_markdown(
         f"| Max input tokens | {markdown_cell(metrics['max_input_tokens'])} |",
         f"| Temperature | {format_metric_value(metrics['temperature'])} |",
         f"| Top p | {format_metric_value(metrics['top_p'])} |",
+        f"| Gold schema in prompt | {yes_no(metrics.get('include_gold_schema', False))} |",
         f"| Evaluation postprocessing | {yes_no(metrics.get('postprocess', False))} |",
+        f"| Draft-and-Prune | {yes_no(metrics.get('draft_and_prune', False))} |",
+        f"| D&P paths | {markdown_cell(metrics.get('dp_paths'))} |",
         "",
         "## Metrics",
         "",
@@ -887,10 +1386,28 @@ def build_model_report_markdown(
                 "| Postprocessing changed output | "
                 f"{count_true(predictions, 'postprocessing_changed')} |"
             ),
+        ]
+    )
+    if metrics.get("draft_and_prune", False):
+        lines.extend(
+            [
+                (
+                    "| D&P executable examples | "
+                    f"{count_true(predictions, 'dp_executable')} |"
+                ),
+                (
+                    "| D&P correct labels | "
+                    f"{count_true(predictions, 'dp_label_correct')} |"
+                ),
+            ]
+        )
+    lines.extend(
+        [
             "",
             (
-                "Correct examples below use the full autoformalization match while "
-                "ignoring premise order."
+                "Correct examples below use the D&P solver-label vote when "
+                "Draft-and-Prune is enabled; otherwise they use the full "
+                "autoformalization match while ignoring premise order."
             ),
             "",
         ]
@@ -963,6 +1480,29 @@ def report_metric_rows(
                 ("Prover attempted", "prover_attempted", None),
             ]
         )
+    if metrics.get("draft_and_prune", False):
+        rows.extend(
+            [
+                ("D&P label accuracy", "dp_label_accuracy", "dp_label_correct"),
+                (
+                    "D&P label accuracy on executable",
+                    "dp_label_accuracy_on_executable",
+                    None,
+                ),
+                ("D&P execution rate", "dp_execution_rate", "dp_executable"),
+                (
+                    "D&P path execution rate",
+                    "dp_path_execution_rate",
+                    None,
+                ),
+                ("D&P path accuracy", "dp_path_accuracy", None),
+                ("D&P hit rate", "dp_hit_rate", "dp_hit"),
+                ("D&P abstention rate", "dp_abstention_rate", "dp_abstained"),
+                ("D&P tie rate", "dp_tie_rate", "dp_tie"),
+                ("D&P avg surviving paths", "dp_avg_surviving_paths", None),
+                ("D&P avg vote entropy", "dp_avg_vote_entropy", None),
+            ]
+        )
     return [row for row in rows if row[1] in metrics]
 
 
@@ -989,11 +1529,12 @@ def build_report_summary_markdown(
                 (
                     "| Model | Report | Examples | Parse rate | Full accuracy | "
                     "Full accuracy, ignore order | Conclusion accuracy | "
-                    "Premise macro F1 | Schema pred F1 | Schema const F1 |"
+                    "Premise macro F1 | Schema pred F1 | Schema const F1 | "
+                    "D&P acc | D&P exec |"
                 ),
                 (
                     "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | "
-                    "---: | ---: |"
+                    "---: | ---: | ---: | ---: |"
                 ),
             ]
         )
@@ -1015,10 +1556,53 @@ def build_report_summary_markdown(
                 f"{format_metric_value(metrics['conclusion_accuracy'])} | "
                 f"{format_metric_value(metrics['premise_macro_f1'])} | "
                 f"{format_metric_value(metrics.get('schema_predicate_macro_f1'))} | "
-                f"{format_metric_value(metrics.get('schema_constant_macro_f1'))} |"
+                f"{format_metric_value(metrics.get('schema_constant_macro_f1'))} | "
+                f"{format_metric_value(metrics.get('dp_label_accuracy'))} | "
+                f"{format_metric_value(metrics.get('dp_execution_rate'))} |"
             )
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def select_wrong_dp_examples(
+    predictions: list[dict[str, Any]],
+    limit: int,
+) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+
+    wrong_predictions = [
+        result for result in predictions if not result.get("dp_label_correct", False)
+    ]
+    selected = []
+    selected_ids = set()
+    selectors = [
+        lambda result: result.get("dp_abstained", False),
+        lambda result: result.get("dp_hit", False)
+        and not result.get("dp_label_correct", False),
+        lambda result: not result.get("dp_hit", False),
+    ]
+
+    for selector in selectors:
+        for result in wrong_predictions:
+            result_id = id(result)
+            if result_id not in selected_ids and selector(result):
+                selected.append(result)
+                selected_ids.add(result_id)
+                break
+        if len(selected) >= limit:
+            return selected
+
+    for result in wrong_predictions:
+        result_id = id(result)
+        if result_id in selected_ids:
+            continue
+        selected.append(result)
+        selected_ids.add(result_id)
+        if len(selected) >= limit:
+            break
+
+    return selected
 
 
 def select_wrong_examples(
@@ -1084,8 +1668,13 @@ def append_examples_section(
 def append_example(lines: list[str], result: dict[str, Any], index: int) -> None:
     example_id = result.get("example_id") or "unknown"
     story_id = result.get("story_id") or "unknown"
-    status = "correct" if result["joint_unordered_exact"] else "wrong"
-    if not result["parsed"]:
+    if result.get("draft_and_prune", False):
+        status = "correct" if result.get("dp_label_correct", False) else "wrong"
+        if result.get("dp_abstained", False):
+            status = "all paths pruned"
+    else:
+        status = "correct" if result["joint_unordered_exact"] else "wrong"
+    if not result["parsed"] and not result.get("draft_and_prune", False):
         status = "parse failure"
 
     lines.extend(
@@ -1127,6 +1716,18 @@ def append_example(lines: list[str], result: dict[str, Any], index: int) -> None
             "",
         ]
     )
+    if result.get("draft_and_prune", False):
+        lines.extend(
+            [
+                f"- D&P prediction: `{result.get('dp_prediction')}`",
+                f"- D&P label correct: `{yes_no(result.get('dp_label_correct'))}`",
+                f"- D&P surviving paths: `{result.get('dp_surviving_paths')}/{result.get('dp_total_paths')}`",
+                f"- D&P correct paths: `{result.get('dp_correct_paths')}/{result.get('dp_total_paths')}`",
+                f"- D&P vote counts: `{markdown_cell(result.get('dp_vote_counts'))}`",
+                f"- D&P selected path: `{result.get('dp_selected_path_index')}`",
+                "",
+            ]
+        )
     invalid_predicates = result.get("invalid_predicates") or []
     invalid_constants = result.get("invalid_constants") or []
     if invalid_predicates or invalid_constants:
@@ -1230,6 +1831,13 @@ def print_metrics(metrics: dict[str, Any]) -> None:
             "  prover_label_accuracy_on_parsed: "
             f"{metrics['prover_label_accuracy_on_parsed']:.4f}"
         )
+    if metrics.get("draft_and_prune", False):
+        print(f"  dp_label_accuracy: {metrics['dp_label_accuracy']:.4f}")
+        print(f"  dp_execution_rate: {metrics['dp_execution_rate']:.4f}")
+        print(f"  dp_path_execution_rate: {metrics['dp_path_execution_rate']:.4f}")
+        print(f"  dp_path_accuracy: {metrics['dp_path_accuracy']:.4f}")
+        print(f"  dp_hit_rate: {metrics['dp_hit_rate']:.4f}")
+        print(f"  dp_abstention_rate: {metrics['dp_abstention_rate']:.4f}")
 
 
 def main() -> None:
@@ -1240,14 +1848,21 @@ def main() -> None:
         raise ValueError("--predictions-output can only be used with one --model.")
     if args.report_examples < 0:
         raise ValueError("--report-examples must be greater than or equal to 0.")
+    if args.paths <= 0:
+        raise ValueError("--paths must be greater than 0.")
+    if args.repair_rounds < 0:
+        raise ValueError("--repair-rounds must be greater than or equal to 0.")
 
     set_seed(args.seed)
     records = load_jsonl_dataset(args.dataset, args.limit)
+    formalization_temperature = args.formalization_temperature
+    if formalization_temperature is None:
+        formalization_temperature = 0.0 if args.draft_and_prune else args.temperature
     generation_config = GenerationConfig(
         batch_size=args.batch_size,
         max_new_tokens=args.max_new_tokens,
         max_input_tokens=args.max_input_tokens,
-        temperature=args.temperature,
+        temperature=formalization_temperature,
         top_p=args.top_p,
     )
 

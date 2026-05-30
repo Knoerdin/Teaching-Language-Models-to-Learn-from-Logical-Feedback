@@ -25,6 +25,7 @@ def _bootstrap_log(message: str) -> None:
 _bootstrap_log("Starting trainer process")
 _bootstrap_log("Importing hydra")
 import hydra
+from hydra.core.hydra_config import HydraConfig
 _bootstrap_log("Importing torch")
 import torch
 _bootstrap_log("Importing datasets")
@@ -134,6 +135,56 @@ def _resolve_mlflow_tracking_uri(mlflow_cfg: DictConfig) -> str:
         return env_uri
 
     return _repo_tracking_uri()
+
+
+def _absolute_path(path: str | Path) -> Path:
+    resolved = Path(path)
+    if resolved.is_absolute():
+        return resolved.resolve()
+    return (Path(get_original_cwd()) / resolved).resolve()
+
+
+def _sanitize_path_component(value: str) -> str:
+    safe_chars = []
+    for char in value.strip():
+        if char.isalnum() or char in {".", "_", "-"}:
+            safe_chars.append(char)
+        else:
+            safe_chars.append("_")
+
+    cleaned = "".join(safe_chars).strip("._-")
+    return cleaned or "run"
+
+
+def _hydra_run_output_dir() -> Path | None:
+    try:
+        output_dir = HydraConfig.get().runtime.output_dir
+    except ValueError:
+        return None
+
+    return _absolute_path(str(output_dir))
+
+
+def _activate_run_output_dir(cfg: DictConfig) -> None:
+    base_output_dir = _absolute_path(str(cfg.trainer.output_dir))
+    explicit_output_dir = _optional_str(os.environ.get("TRAINING_OUTPUT_DIR"))
+    if explicit_output_dir:
+        run_output_dir = _absolute_path(explicit_output_dir)
+    else:
+        run_id = _optional_str(os.environ.get("TRAINING_RUN_ID"))
+        slurm_job_id = _optional_str(os.environ.get("SLURM_JOB_ID"))
+        if run_id:
+            run_output_dir = base_output_dir / _sanitize_path_component(run_id)
+        elif slurm_job_id:
+            run_output_dir = (
+                base_output_dir / f"slurm-{_sanitize_path_component(slurm_job_id)}"
+            )
+        else:
+            run_output_dir = _hydra_run_output_dir() or base_output_dir
+
+    cfg.trainer.output_dir = str(run_output_dir)
+    _log_stage(f"Configured output family: {base_output_dir}")
+    _log_stage(f"Trainer output dir for this run: {run_output_dir}")
 
 
 def _disable_mlflow_tracing() -> None:
@@ -475,6 +526,7 @@ def _add_mlflow_report_to(trainer_args_dict: dict[str, Any]) -> None:
 @hydra.main(version_base=None, config_path="../CONFIGS", config_name="config")
 def main(cfg: DictConfig) -> None:
     _log_stage("Configuring runtime")
+    _activate_run_output_dir(cfg)
     trainer_kind = _trainer_kind(cfg)
     _set_seed(int(cfg.trainer.seed))
     runtime_device = _resolve_runtime_device(cfg)

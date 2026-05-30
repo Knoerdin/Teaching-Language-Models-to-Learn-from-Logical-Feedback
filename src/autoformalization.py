@@ -35,12 +35,56 @@ def build_schema_section(example: dict[str, Any]) -> str:
     )
 
 
-def build_prompt(example: dict[str, Any]) -> str:
+def _schema_prompt(example: dict[str, Any], *, include_gold_schema: bool) -> str:
+    if not include_gold_schema:
+        return ""
     problem_schema = build_schema_section(example)
-    schema_prompt = (
+    if not problem_schema:
+        return ""
+    return (
         "Problem schema:\n"
         f"{problem_schema}\n\n"
-        if problem_schema
+    )
+
+
+def _problem_block(example: dict[str, Any]) -> str:
+    return (
+        "Problem natural-language premises:\n"
+        f"{example['premises']}\n\n"
+        "Problem natural-language conclusion:\n"
+        f"{example['conclusion']}\n\n"
+    )
+
+
+def build_plan_prompt(example: dict[str, Any]) -> str:
+    return (
+        "Draft a concise plan for translating a natural-language logical "
+        "reasoning problem into first-order logic.\n"
+        "Do not solve the problem, do not give a truth label, and do not write "
+        "the final formalization.\n\n"
+        "Your plan should identify:\n"
+        "1. The entities/constants that need names.\n"
+        "2. The predicates and their arities.\n"
+        "3. How each natural-language premise should map to a FOL formula.\n"
+        "4. How the conclusion should map to a FOL formula.\n\n"
+        "Use meaningful English-letter predicate and constant names inferred "
+        "from the text.\n\n"
+        f"{_problem_block(example)}"
+        "Drafted plan:\n"
+    )
+
+
+def build_prompt(
+    example: dict[str, Any],
+    *,
+    include_gold_schema: bool = False,
+    draft_plan: str | None = None,
+) -> str:
+    schema_prompt = _schema_prompt(example, include_gold_schema=include_gold_schema)
+    draft_prompt = (
+        "Drafted plan to follow:\n"
+        f"{draft_plan.strip()}\n\n"
+        if draft_plan and draft_plan.strip()
         else ""
     )
     return (
@@ -65,6 +109,8 @@ def build_prompt(example: dict[str, Any]) -> str:
         "Equality and inequality may be used as = and ≠ when needed.\n"
         "When a problem schema is provided, use only its predicate names, arities, "
         "and constants/literals; introduce variables as needed.\n"
+        "When no problem schema is provided, infer meaningful predicate and "
+        "constant names from the natural-language text.\n"
         "If a phrase combines concepts that appear separately in the schema, "
         "write a conjunction of those predicates instead of inventing a compound predicate.\n"
         "Stop immediately after the conclusion formula.\n\n"
@@ -95,11 +141,44 @@ def build_prompt(example: dict[str, Any]) -> str:
         "Conclusion:\n"
         "Eel(seaEel)\n\n"
         f"{schema_prompt}"
-        "Problem natural-language premises:\n"
-        f"{example['premises']}\n\n"
-        "Problem natural-language conclusion:\n"
-        f"{example['conclusion']}\n\n"
+        f"{draft_prompt}"
+        f"{_problem_block(example)}"
         "Formalization:\n"
+        "Premises:\n"
+    )
+
+
+def build_repair_prompt(
+    example: dict[str, Any],
+    *,
+    broken_formalization: str,
+    solver_feedback: str | None,
+    draft_plan: str | None = None,
+) -> str:
+    draft_prompt = (
+        "Drafted plan that the formalization was meant to follow:\n"
+        f"{draft_plan.strip()}\n\n"
+        if draft_plan and draft_plan.strip()
+        else ""
+    )
+    feedback = (solver_feedback or "The formalization was not executable.").strip()
+    return (
+        "Repair this first-order logic formalization so that it is syntactically "
+        "valid and executable by the theorem prover.\n"
+        "Preserve the intended meaning of the natural-language problem. Return "
+        "only the repaired formalization and no explanation.\n\n"
+        "Required format:\n"
+        "Premises:\n"
+        "<one complete FOL premise per line>\n\n"
+        "Conclusion:\n"
+        "<one complete FOL conclusion>\n\n"
+        f"{_problem_block(example)}"
+        f"{draft_prompt}"
+        "Broken formalization:\n"
+        f"{broken_formalization.strip()}\n\n"
+        "Solver or parser feedback:\n"
+        f"{feedback}\n\n"
+        "Repaired formalization:\n"
         "Premises:\n"
     )
 
@@ -112,7 +191,12 @@ def build_sft_completion(example: dict[str, Any]) -> str:
     )
 
 
-def prepare_dataset(path: str, trainer_kind: str):
+def prepare_dataset(
+    path: str,
+    trainer_kind: str,
+    *,
+    include_gold_schema: bool = False,
+):
     from datasets import load_dataset
 
     source_path = Path(path)
@@ -129,7 +213,7 @@ def prepare_dataset(path: str, trainer_kind: str):
                 f"Expected one of: {sorted(VALID_LABELS)}"
             )
         mapped_row = {
-            "prompt": build_prompt(row),
+            "prompt": build_prompt(row, include_gold_schema=include_gold_schema),
             "solution": normalize_label(str(row["label"])),
             "premises": row["premises"],
             "conclusion": row["conclusion"],
