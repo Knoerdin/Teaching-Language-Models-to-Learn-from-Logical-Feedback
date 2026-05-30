@@ -183,22 +183,6 @@ def evaluate_correctness(
     )
 
 
-def correctness_reward(
-    nl_premises: str,
-    nl_conclusion: str,
-    formal_premises: str,
-    formal_conclusion: str,
-    gold_label: str,
-) -> float:
-    return evaluate_correctness(
-        nl_premises=nl_premises,
-        nl_conclusion=nl_conclusion,
-        formal_premises=formal_premises,
-        formal_conclusion=formal_conclusion,
-        gold_label=gold_label,
-    ).reward
-
-
 def _captured_solver_output(
     stdout_buffer: io.StringIO,
     stderr_buffer: io.StringIO,

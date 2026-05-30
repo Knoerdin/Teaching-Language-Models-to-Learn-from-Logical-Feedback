@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import csv
 import math
-import re
 from collections import defaultdict
 from pathlib import Path
 from typing import Iterable
@@ -33,18 +32,6 @@ REWARD_RANGE_COLUMNS = (
     "range_mean",
     "range_worst",
 )
-TRAINER_COLUMNS = (
-    "reward",
-    "loss",
-    "reward_std",
-    "entropy",
-    "completions/mean_length",
-    "completions/clipped_ratio",
-    "learning_rate",
-    "grad_norm",
-)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Plot training results from SLURM log summary CSV files.",

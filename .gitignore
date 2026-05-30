@@ -5,6 +5,7 @@
 .mypy_cache
 ci_cd_template.*
 htmlcov
+.DS_Store
 
 .vscode/*
 !.vscode/settings.json

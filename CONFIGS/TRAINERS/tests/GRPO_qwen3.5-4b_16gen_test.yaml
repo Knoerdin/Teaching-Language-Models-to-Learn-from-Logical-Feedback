@@ -1,3 +1,4 @@
+kind: grpo
 output_dir: outputs/grpo_qwen3.5-4b_16gen_test
 seed: 42
 device: auto
@@ -18,11 +19,7 @@ terminal:
   max_autoformalization_chars: 2000
   show_dataset_progress: false
 
-trainer_cls:
-  _target_: trl.GRPOTrainer
-
 args:
-  _target_: trl.GRPOConfig
   learning_rate: 1.0e-6
   per_device_train_batch_size: 1
   generation_batch_size: 16

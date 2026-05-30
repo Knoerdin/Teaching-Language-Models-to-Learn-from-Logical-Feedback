@@ -28,11 +28,7 @@ peft:
     - up_proj
     - down_proj
 
-trainer_cls:
-  _target_: trl.SFTTrainer
-
 args:
-  _target_: trl.SFTConfig
   learning_rate: 2.0e-5
   per_device_train_batch_size: 1
   gradient_accumulation_steps: 8

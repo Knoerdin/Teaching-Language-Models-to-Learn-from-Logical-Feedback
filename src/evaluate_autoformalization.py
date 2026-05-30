@@ -13,6 +13,8 @@ import re
 from typing import Any
 
 from REWARDS.fol_schema import gold_fol_reward as score_gold_fol_reward
+from REWARDS.fol_schema import normalized_block
+from REWARDS.fol_schema import normalized_lines
 from REWARDS.fol_schema import postprocess_formalization
 from REWARDS.fol_schema import schema_violations
 from REWARDS.formatting import extract_formalization
@@ -36,8 +38,6 @@ REQUIRED_DATASET_COLUMNS = {
     "conclusion-FOL",
     "label",
 }
-ARROW_ALIASES = ("->", "=>", "⇒")
-BICONDITIONAL_ALIASES = ("⇔", "<->")
 DATASET_TO_SOLVER_LABEL = {
     "true": "TRUE",
     "false": "FALSE",
@@ -325,30 +325,6 @@ def set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-
-
-def normalize_fol_line(line: str) -> str:
-    line = line.strip()
-    for alias in ARROW_ALIASES:
-        line = line.replace(alias, "→")
-    for alias in BICONDITIONAL_ALIASES:
-        line = line.replace(alias, "↔")
-    line = line.replace("~", "¬")
-    return re.sub(r"\s+", "", line)
-
-
-def normalized_lines(block: str | None) -> list[str]:
-    if block is None:
-        return []
-    return [
-        normalized
-        for line in block.splitlines()
-        if (normalized := normalize_fol_line(line))
-    ]
-
-
-def normalized_block(block: str | None) -> str:
-    return "\n".join(normalized_lines(block))
 
 
 def stripped_block(block: str | None) -> str:

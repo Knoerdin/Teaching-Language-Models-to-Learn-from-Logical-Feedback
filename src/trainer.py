@@ -100,17 +100,13 @@ def _optional_str(value: Any) -> str | None:
 
 def _trainer_kind(cfg: DictConfig) -> str:
     configured_kind = _optional_str(cfg.trainer.get("kind", None))
-    if configured_kind:
-        trainer_kind = configured_kind.lower()
-    else:
-        target_hints = [
-            str(cfg.trainer.get("trainer_cls", {}).get("_target_", "")),
-            str(cfg.trainer.get("args", {}).get("_target_", "")),
-        ]
-        if any("SFT" in target_hint for target_hint in target_hints):
-            trainer_kind = TRAINER_KIND_SFT
-        else:
-            trainer_kind = TRAINER_KIND_GRPO
+    if not configured_kind:
+        raise ValueError(
+            "trainer.kind must be set explicitly. "
+            f"Expected one of: {sorted(VALID_TRAINER_KINDS)}"
+        )
+
+    trainer_kind = configured_kind.lower()
 
     if trainer_kind not in VALID_TRAINER_KINDS:
         raise ValueError(
@@ -243,6 +239,8 @@ def _configure_reward_logging(cfg: DictConfig):
             "model_name_or_path": cfg.model.model_name_or_path,
             "trainer_output_dir": cfg.trainer.output_dir,
             "trainer_device": cfg.trainer.get("device", "auto"),
+            "task_name": cfg.get("task", {}).get("name", "unknown"),
+            "task_reward_type": cfg.get("task", {}).get("reward_type", "unknown"),
             "dataset_train_path": cfg.dataset.train_path,
             "dataset_validation_path": cfg.dataset.validation_path,
             "reward_primary_metric": "total_reward",
@@ -259,6 +257,7 @@ def _configure_reward_logging(cfg: DictConfig):
             "primary_metric": "total_reward",
             "mlflow_tracing": "disabled" if disable_traces else "enabled",
             "model": cfg.model.get("name", cfg.model.model_name_or_path),
+            "task": cfg.get("task", {}).get("name", "unknown"),
             "trainer_output_dir": cfg.trainer.output_dir,
             "hostname": socket.gethostname(),
             "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
@@ -308,6 +307,7 @@ def _mlflow_tags(
         "trainer_kind": trainer_kind,
         "mlflow_tracing": "disabled" if disable_traces else "enabled",
         "model": str(cfg.model.get("name", cfg.model.model_name_or_path)),
+        "task": str(cfg.get("task", {}).get("name", "unknown")),
         "trainer_output_dir": str(cfg.trainer.output_dir),
         "hostname": socket.gethostname(),
         "slurm_job_id": str(os.environ.get("SLURM_JOB_ID", "")),
@@ -347,9 +347,12 @@ def _print_training_summary(
     args = cfg.trainer.args
     mlflow_cfg = cfg.trainer.get("mlflow", {})
     terminal_cfg = cfg.trainer.get("terminal", {})
+    task_cfg = cfg.get("task", {})
 
     print("Starting training")
     print(f"  trainer: {trainer_kind}")
+    if task_cfg:
+        print(f"  task: {task_cfg.get('name', 'unknown')}")
     print(f"  model: {cfg.model.model_name_or_path}")
     print(f"  device: {runtime_device}")
     print(f"  output_dir: {cfg.trainer.output_dir}")
@@ -484,7 +487,6 @@ def _build_trainer_args_dict(
     trainer_kind: str,
 ) -> dict[str, Any]:
     trainer_args_dict = OmegaConf.to_container(cfg.trainer.args, resolve=True)
-    trainer_args_dict.pop("_target_", None)
 
     if trainer_kind == TRAINER_KIND_GRPO:
         _add_generation_guards(trainer_args_dict, tokenizer)
