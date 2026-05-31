@@ -1,0 +1,113 @@
+#!/bin/bash
+#SBATCH --job-name=grpo_qwen35_9b_8gen
+#SBATCH --output=SLURM/logs/GRPO/job_%j.out
+#SBATCH --error=SLURM/logs/GRPO/job_%j.out
+#SBATCH --time=16:00:00
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=4
+#SBATCH --cpus-per-task=32
+#SBATCH --mem=360G
+
+set -euo pipefail
+
+echo "[$(date)] Starting ${SLURM_JOB_NAME:-job} ${SLURM_JOB_ID:-unknown} on $(hostname)"
+echo "Submit directory: ${SLURM_SUBMIT_DIR:-unknown}"
+
+module purge
+module load 2025
+
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+PROJECT_DIR="$SUBMIT_DIR"
+while [ "$PROJECT_DIR" != "/" ] && [ ! -f "$PROJECT_DIR/pyproject.toml" ]; do
+  PROJECT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+done
+
+if [ ! -f "$PROJECT_DIR/pyproject.toml" ]; then
+  echo "Could not find project directory from submit directory: $SUBMIT_DIR"
+  echo "Submit from the repo root, SLURM directory, or a SLURM job subdirectory."
+  exit 1
+fi
+
+echo "Project directory: $PROJECT_DIR"
+cd "$PROJECT_DIR"
+
+if [ -n "${CUDA_VISIBLE_DEVICES:-}" ] && [ "${CUDA_VISIBLE_DEVICES}" != "NoDevFiles" ]; then
+  IFS=',' read -ra CUDA_DEVICE_IDS <<< "$CUDA_VISIBLE_DEVICES"
+  NPROC_PER_NODE="${#CUDA_DEVICE_IDS[@]}"
+elif [[ "${SLURM_GPUS_ON_NODE:-}" =~ ^[0-9]+$ ]]; then
+  NPROC_PER_NODE="$SLURM_GPUS_ON_NODE"
+else
+  NPROC_PER_NODE=4
+fi
+
+if [ "$NPROC_PER_NODE" -lt 1 ]; then
+  echo "Could not infer a valid GPU count."
+  exit 1
+fi
+
+if [[ "${MASTER_PORT:-}" =~ ^[0-9]+$ ]]; then
+  TORCH_MASTER_PORT="$MASTER_PORT"
+elif [[ "${SLURM_JOB_ID:-}" =~ ^[0-9]+$ ]]; then
+  TORCH_MASTER_PORT=$((20000 + SLURM_JOB_ID % 40000))
+else
+  TORCH_MASTER_PORT=29501
+fi
+export MASTER_PORT="$TORCH_MASTER_PORT"
+
+export PATH="$HOME/.local/bin:$PATH"
+PYTHON_RUN=(python -u)
+TORCH_RUN=(python -m torch.distributed.run --nproc_per_node="$NPROC_PER_NODE" --master_port="$MASTER_PORT")
+if [ -f env/bin/activate ]; then
+  echo "Using virtual environment: env"
+  source env/bin/activate
+elif [ -f .venv/bin/activate ]; then
+  echo "Using virtual environment: .venv"
+  source .venv/bin/activate
+elif command -v uv >/dev/null 2>&1; then
+  echo "Using uv: $(command -v uv)"
+  uv --version
+  PYTHON_RUN=(uv run --frozen python -u)
+  TORCH_RUN=(uv run --frozen python -m torch.distributed.run --nproc_per_node="$NPROC_PER_NODE" --master_port="$MASTER_PORT")
+else
+  echo "No virtual environment found at env/bin/activate or .venv/bin/activate, and uv is not on PATH."
+  echo "From the project directory, create an environment with: uv sync --frozen"
+  exit 1
+fi
+
+summarize_logs_on_exit() {
+  local exit_code=$?
+  trap - EXIT
+  set +e
+  echo "[$(date)] Updating SLURM log summaries"
+  "${PYTHON_RUN[@]}" SLURM/summarize_logs.py --logs SLURM/logs --out SLURM/log_summaries
+  exit "$exit_code"
+}
+trap summarize_logs_on_exit EXIT
+
+export PYTHONUNBUFFERED=1
+export HYDRA_FULL_ERROR=1
+export MLFLOW_TRACE_SAMPLING_RATIO="${MLFLOW_TRACE_SAMPLING_RATIO:-0.0}"
+export MLFLOW_ENABLE_ASYNC_TRACE_LOGGING="${MLFLOW_ENABLE_ASYNC_TRACE_LOGGING:-false}"
+export USE_TF=0
+export USE_FLAX=0
+export USE_JAX=0
+export TRANSFORMERS_NO_TF=1
+export TRANSFORMERS_NO_FLAX=1
+export TOKENIZERS_PARALLELISM=false
+export HF_HUB_DISABLE_TELEMETRY=1
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
+echo "Python command: ${PYTHON_RUN[*]}"
+"${PYTHON_RUN[@]}" --version
+echo "Torch processes: $NPROC_PER_NODE"
+echo "Torch master port: $MASTER_PORT"
+
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+nvidia-smi
+free -h
+
+echo "[$(date)] Launching training"
+"${TORCH_RUN[@]}" src/trainer.py \
+  TRAINERS@trainer=GRPO_qwen3.5-9b_8gen \
+  MODELS@model=qwen3.5-9b
+echo "[$(date)] Training finished"
