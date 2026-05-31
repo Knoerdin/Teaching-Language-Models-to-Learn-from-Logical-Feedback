@@ -41,6 +41,6 @@ args:
   num_generations: 8
   max_completion_length: 192
   repetition_penalty: 1.1
-  max_steps: 3000
+  max_steps: 2000
   logging_steps: 10
   report_to: none

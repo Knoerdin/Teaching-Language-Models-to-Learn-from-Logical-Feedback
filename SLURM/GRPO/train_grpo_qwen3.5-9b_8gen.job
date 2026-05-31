@@ -2,7 +2,7 @@
 #SBATCH --job-name=grpo_qwen35_9b_8gen
 #SBATCH --output=SLURM/logs/GRPO/job_%j.out
 #SBATCH --error=SLURM/logs/GRPO/job_%j.out
-#SBATCH --time=16:00:00
+#SBATCH --time=12:00:00
 #SBATCH --partition=gpu_h100
 #SBATCH --gpus=4
 #SBATCH --cpus-per-task=32
