@@ -344,11 +344,15 @@ def extract_samples(lines: list[str]) -> list[SampleBlock]:
 def extract_model_result(block: str) -> tuple[str, str]:
     premises_marker = "\nPremises:\n"
     conclusion_marker = "\nConclusion:\n"
-    if premises_marker not in block or conclusion_marker not in block:
+    premises_marker_start = block.find(premises_marker)
+    if premises_marker_start < 0:
         return "", ""
 
-    premises_start = block.index(premises_marker) + len(premises_marker)
-    conclusion_start = block.index(conclusion_marker, premises_start)
+    premises_start = premises_marker_start + len(premises_marker)
+    conclusion_start = block.find(conclusion_marker, premises_start)
+    if conclusion_start < 0:
+        return "", ""
+
     conclusion_text_start = conclusion_start + len(conclusion_marker)
     premises = block[premises_start:conclusion_start].strip()
     conclusion = block[conclusion_text_start:].strip()
