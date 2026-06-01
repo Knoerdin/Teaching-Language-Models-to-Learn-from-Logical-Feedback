@@ -85,6 +85,11 @@ Draft-and-Prune reports `dp_label_accuracy`, execution rate, path accuracy,
 hit rate, abstention rate, tie rate, and the vote counts/path summaries in the
 prediction JSONL. Invalid or unparseable FOL paths are counted as pruned, not as
 unknown labels.
+The evaluator also logs per-checkpoint elapsed time plus the latest D&P path
+status counts. If repair rounds dominate a run, use `--repair-statuses` to
+limit which failed paths are regenerated, for example `--repair-statuses
+parse_error` to skip raw `not_parsed` outputs or `--repair-statuses none` to
+prune all failed paths immediately.
 
 On Snellius, run D&P evaluation through SLURM instead of the login node:
 
@@ -100,6 +105,9 @@ model from `sbatch` when needed, for example:
 sbatch --export=ALL,MODEL_NAME=sft,MODEL_PATH=outputs/sft_qwen3.5-9b/checkpoint-3000 \
   SLURM/EVAL/evaluate_dp_qwen3.5-9b_smoke.job
 ```
+
+The full D&P SLURM job also accepts `PATHS`, `REPAIR_ROUNDS`,
+`REPAIR_STATUSES`, `BATCH_SIZE`, and `LIMIT` through `sbatch --export`.
 
 When `--output-dir` is set, the evaluator also writes Markdown reports under
 `OUTPUT_DIR/eval_reports/`, separated into `grpo/` and `sft/` subfolders when

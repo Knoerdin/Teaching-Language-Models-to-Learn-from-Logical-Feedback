@@ -80,6 +80,7 @@ DATASET="${DATASET:-DATA/FOLIO/folio_test.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/evaluations/qwen3.5-9b-dp-smoke}"
 PATHS="${PATHS:-2}"
 REPAIR_ROUNDS="${REPAIR_ROUNDS:-0}"
+REPAIR_STATUSES="${REPAIR_STATUSES:-all}"
 LIMIT="${LIMIT:-2}"
 BATCH_SIZE="${BATCH_SIZE:-1}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-256}"
@@ -134,6 +135,7 @@ ARGS=(
   --draft-and-prune
   --paths "$PATHS"
   --repair-rounds "$REPAIR_ROUNDS"
+  --repair-statuses "$REPAIR_STATUSES"
   --run-prover
   --batch-size "$BATCH_SIZE"
   --max-new-tokens "$MAX_NEW_TOKENS"

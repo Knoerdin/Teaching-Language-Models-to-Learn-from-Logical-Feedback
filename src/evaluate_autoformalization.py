@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import random
 import re
+import time
 from typing import Any
 
 from REWARDS.fol_schema import gold_fol_reward as score_gold_fol_reward
@@ -55,6 +56,8 @@ UNEXECUTABLE_PROVER_STATUSES = {
     "invalid_label",
     "all_paths_pruned",
 }
+ALL_REPAIR_STATUSES = "all"
+NO_REPAIR_STATUSES = "none"
 
 
 @dataclass(frozen=True)
@@ -208,6 +211,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--repair-statuses",
+        default=ALL_REPAIR_STATUSES,
+        help=(
+            "Comma-separated prover statuses eligible for D&P repair. Use "
+            "'all' to repair every non-executable path, or 'none' to disable "
+            "repairs without changing --repair-rounds."
+        ),
+    )
+    parser.add_argument(
         "--postprocess",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -242,6 +254,24 @@ def parse_model_specs(values: list[str]) -> list[ModelSpec]:
             ModelSpec(name=name, path=path, trainer_kind=infer_trainer_kind(name, path))
         )
     return specs
+
+
+def parse_repair_statuses(value: str) -> set[str] | None:
+    normalized = value.strip().lower()
+    if normalized in {"", ALL_REPAIR_STATUSES}:
+        return None
+    if normalized == NO_REPAIR_STATUSES:
+        return set()
+
+    statuses = {item.strip().lower() for item in normalized.split(",") if item.strip()}
+    invalid_statuses = statuses.difference(UNEXECUTABLE_PROVER_STATUSES)
+    if invalid_statuses:
+        raise ValueError(
+            "Unsupported --repair-statuses value(s): "
+            f"{sorted(invalid_statuses)}. "
+            f"Use 'all', 'none', or any of {sorted(UNEXECUTABLE_PROVER_STATUSES)}."
+        )
+    return statuses
 
 
 def is_local_like_model_path(path: str) -> bool:
@@ -709,6 +739,18 @@ def path_is_executable(result: dict[str, Any]) -> bool:
     return bool(result.get("dp_path_executable"))
 
 
+def should_repair_path(
+    result: dict[str, Any],
+    repair_statuses: set[str] | None,
+) -> bool:
+    if path_is_executable(result):
+        return False
+    if repair_statuses is None:
+        return True
+    status = str(result.get("prover_status") or "").lower()
+    return status in repair_statuses
+
+
 def render_broken_formalization(result: dict[str, Any]) -> str:
     raw_premises = result.get("raw_predicted_premises")
     raw_conclusion = result.get("raw_predicted_conclusion")
@@ -743,56 +785,79 @@ def score_draft_path(
     return result
 
 
-def repair_draft_path(
+def repair_draft_paths(
     model: Any,
     tokenizer: Any,
     record: dict[str, Any],
-    path_result: dict[str, Any],
+    path_results: list[dict[str, Any]],
     *,
-    draft_plan: str,
+    draft_plans: list[str],
     config: GenerationConfig,
     max_rounds: int,
+    repair_statuses: set[str] | None,
     apply_postprocessing: bool,
     include_prompt: bool,
-) -> dict[str, Any]:
-    result = path_result
-    repair_attempts = []
+) -> list[dict[str, Any]]:
+    results = list(path_results)
+    repair_attempts_by_index = [
+        list(result.get("repair_attempts", [])) for result in results
+    ]
+
     for repair_round in range(1, max(0, max_rounds) + 1):
-        if path_is_executable(result):
+        repair_indices = [
+            index
+            for index, result in enumerate(results)
+            if should_repair_path(result, repair_statuses)
+        ]
+        if not repair_indices:
             break
 
-        repair_prompt = build_repair_prompt(
-            record,
-            broken_formalization=render_broken_formalization(result),
-            solver_feedback=result.get("prover_feedback"),
-            draft_plan=draft_plan,
-        )
-        repaired_generation = generate_batch(
+        repair_prompts = [
+            build_repair_prompt(
+                record,
+                broken_formalization=render_broken_formalization(results[index]),
+                solver_feedback=results[index].get("prover_feedback"),
+                draft_plan=draft_plans[index],
+            )
+            for index in repair_indices
+        ]
+        repaired_generations = generate_in_chunks(
             model,
             tokenizer,
-            [repair_prompt],
+            repair_prompts,
             config,
-        )[0]
-        repair_attempts.append(
-            {
-                "round": repair_round,
-                "previous_status": result.get("prover_status"),
-                "generation": repaired_generation,
-            }
         )
-        result = score_draft_path(
-            record,
-            repaired_generation,
-            path_index=int(path_result["dp_path_index"]),
-            draft_plan=draft_plan,
-            apply_postprocessing=apply_postprocessing,
-            repair_round=repair_round,
-            prompt=repair_prompt,
-            include_prompt=include_prompt,
-        )
+        for index, repair_prompt, repaired_generation in zip(
+            repair_indices,
+            repair_prompts,
+            repaired_generations,
+            strict=True,
+        ):
+            previous_result = results[index]
+            repair_attempts_by_index[index].append(
+                {
+                    "round": repair_round,
+                    "previous_status": previous_result.get("prover_status"),
+                    "generation": repaired_generation,
+                }
+            )
+            repaired_result = score_draft_path(
+                record,
+                repaired_generation,
+                path_index=int(previous_result["dp_path_index"]),
+                draft_plan=draft_plans[index],
+                apply_postprocessing=apply_postprocessing,
+                repair_round=repair_round,
+                prompt=repair_prompt,
+                include_prompt=include_prompt,
+            )
+            repaired_result["repair_attempts"] = list(repair_attempts_by_index[index])
+            results[index] = repaired_result
 
-    result["repair_attempts"] = repair_attempts
-    return result
+    for index, repair_attempts in enumerate(repair_attempts_by_index):
+        if repair_attempts and "repair_attempts" not in results[index]:
+            results[index]["repair_attempts"] = repair_attempts
+    return results
 
 
 def select_majority_label(
@@ -848,6 +913,8 @@ def compact_path_result(result: dict[str, Any]) -> dict[str, Any]:
         "prover_feedback",
         "repair_round",
         "repair_attempts",
+        "dp_repair_attempts",
+        "dp_generation_count",
         "postprocessing_changed",
         "invalid_predicates",
         "invalid_constants",
@@ -881,6 +948,9 @@ def aggregate_draft_and_prune_result(
     repaired_paths = sum(
         1 for path_result in path_results if int(path_result.get("repair_round", 0)) > 0
     )
+    repair_attempt_count = sum(
+        len(path_result.get("repair_attempts", [])) for path_result in path_results
+    )
     pruned_status_counts = Counter(
         str(path_result.get("prover_status") or "unknown")
         for path_result in path_results
@@ -900,6 +970,8 @@ def aggregate_draft_and_prune_result(
             "dp_pruned_paths": len(path_results) - len(surviving_paths),
             "dp_correct_paths": correct_paths,
             "dp_repaired_paths": repaired_paths,
+            "dp_repair_attempts": repair_attempt_count,
+            "dp_generation_count": len(path_results) * 2 + repair_attempt_count,
             "dp_executable": bool(surviving_paths),
             "dp_prediction": predicted_label,
             "dp_solver_prediction": dataset_label_to_solver_prediction(predicted_label),
@@ -968,21 +1040,24 @@ def evaluate_record_draft_and_prune(
             prompt=formalization_prompt,
             include_prompt=args.include_prompt,
         )
-        if not path_is_executable(path_result) and args.repair_rounds > 0:
-            path_result = repair_draft_path(
-                model,
-                tokenizer,
-                record,
-                path_result,
-                draft_plan=draft_plan,
-                config=formalization_config,
-                max_rounds=args.repair_rounds,
-                apply_postprocessing=args.postprocess,
-                include_prompt=args.include_prompt,
-            )
         path_results.append(path_result)
 
+    if args.repair_rounds > 0:
+        path_results = repair_draft_paths(
+            model,
+            tokenizer,
+            record,
+            path_results,
+            draft_plans=draft_plans,
+            config=formalization_config,
+            max_rounds=args.repair_rounds,
+            repair_statuses=getattr(args, "repair_status_set", None),
+            apply_postprocessing=args.postprocess,
+            include_prompt=args.include_prompt,
+        )
+
     result = aggregate_draft_and_prune_result(record, path_results)
+    result["dp_repair_statuses"] = args.repair_statuses
     if args.include_prompt:
         result["plan_prompt"] = plan_prompt
     return result
@@ -1064,6 +1139,12 @@ def summarize_results(
         surviving_paths = sum(
             int(result.get("dp_surviving_paths", 0)) for result in results
         )
+        repair_attempts = sum(
+            int(result.get("dp_repair_attempts", 0)) for result in results
+        )
+        generation_count = sum(
+            int(result.get("dp_generation_count", 0)) for result in results
+        )
         correct_paths = sum(
             int(result.get("dp_correct_paths", 0)) for result in results
         )
@@ -1081,8 +1162,15 @@ def summarize_results(
             {
                 "draft_and_prune": True,
                 "dp_paths": results[0].get("dp_total_paths", 0),
+                "dp_repair_statuses": results[0].get(
+                    "dp_repair_statuses", ALL_REPAIR_STATUSES
+                ),
                 "dp_total_paths": total_paths,
                 "dp_surviving_paths": surviving_paths,
+                "dp_repair_attempts": repair_attempts,
+                "dp_avg_repair_attempts": repair_attempts / total,
+                "dp_generation_count": generation_count,
+                "dp_avg_generation_count": generation_count / total,
                 "dp_path_execution_rate": (
                     surviving_paths / total_paths if total_paths else 0.0
                 ),
@@ -1116,6 +1204,23 @@ def mean(values) -> float:
     return sum(values) / len(values) if values else 0.0
 
 
+def format_duration(seconds: float) -> str:
+    whole_seconds = max(0, int(round(seconds)))
+    minutes, seconds = divmod(whole_seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{seconds:02d}s"
+    if minutes:
+        return f"{minutes}m{seconds:02d}s"
+    return f"{seconds}s"
+
+
+def compact_counts(counts: dict[str, int] | Counter[str] | None) -> str:
+    if not counts:
+        return "-"
+    return ",".join(f"{key}:{value}" for key, value in sorted(counts.items()))
+
+
 def evaluate_model(
     spec: ModelSpec,
     records: list[dict[str, Any]],
@@ -1133,6 +1238,7 @@ def evaluate_model(
     )
 
     results = []
+    model_started_at = time.monotonic()
     if args.draft_and_prune:
         draft_config = GenerationConfig(
             batch_size=generation_config.batch_size,
@@ -1142,6 +1248,7 @@ def evaluate_model(
             top_p=generation_config.top_p,
         )
         for index, record in enumerate(records, start=1):
+            record_started_at = time.monotonic()
             result = evaluate_record_draft_and_prune(
                 model,
                 tokenizer,
@@ -1153,17 +1260,29 @@ def evaluate_model(
             result["model_name"] = spec.name
             result["model_path"] = spec.path
             result["include_gold_schema"] = args.include_gold_schema
+            result["evaluation_seconds"] = time.monotonic() - record_started_at
             results.append(result)
 
             if args.log_every > 0 and (
                 index == len(records) or index % args.log_every == 0
             ):
+                elapsed = time.monotonic() - model_started_at
+                avg_seconds = elapsed / index
                 print(
-                    f"  {spec.name}: evaluated {index}/{len(records)}",
+                    f"  {spec.name}: evaluated {index}/{len(records)} "
+                    f"elapsed={format_duration(elapsed)} "
+                    f"avg={avg_seconds:.1f}s/example "
+                    f"last_dp={result.get('dp_surviving_paths', 0)}/"
+                    f"{result.get('dp_total_paths', 0)} survived "
+                    f"repairs={result.get('dp_repair_attempts', 0)} "
+                    f"gens={result.get('dp_generation_count', 0)} "
+                    "statuses="
+                    f"{compact_counts(result.get('dp_path_status_counts'))}",
                     flush=True,
                 )
     else:
         for start in range(0, len(records), generation_config.batch_size):
+            batch_started_at = time.monotonic()
             end = min(start + generation_config.batch_size, len(records))
             batch = records[start:end]
             prompts = [
@@ -1184,6 +1303,7 @@ def evaluate_model(
                 result["model_name"] = spec.name
                 result["model_path"] = spec.path
                 result["include_gold_schema"] = args.include_gold_schema
+                result["evaluation_seconds"] = time.monotonic() - batch_started_at
                 if args.include_prompt:
                     result["prompt"] = prompt
                 results.append(result)
@@ -1191,7 +1311,14 @@ def evaluate_model(
             if args.log_every > 0 and (
                 end == len(records) or end % args.log_every == 0
             ):
-                print(f"  {spec.name}: evaluated {end}/{len(records)}", flush=True)
+                elapsed = time.monotonic() - model_started_at
+                avg_seconds = elapsed / end
+                print(
+                    f"  {spec.name}: evaluated {end}/{len(records)} "
+                    f"elapsed={format_duration(elapsed)} "
+                    f"avg={avg_seconds:.1f}s/example",
+                    flush=True,
+                )
 
     metrics = summarize_results(
         spec,
@@ -1472,6 +1599,8 @@ def report_metric_rows(
     if metrics.get("draft_and_prune", False):
         rows.extend(
             [
+                ("D&P avg generations", "dp_avg_generation_count", None),
+                ("D&P avg repair attempts", "dp_avg_repair_attempts", None),
                 ("D&P label accuracy", "dp_label_accuracy", "dp_label_correct"),
                 (
                     "D&P label accuracy on executable",
@@ -1821,6 +1950,8 @@ def print_metrics(metrics: dict[str, Any]) -> None:
             f"{metrics['prover_label_accuracy_on_parsed']:.4f}"
         )
     if metrics.get("draft_and_prune", False):
+        print(f"  dp_avg_generation_count: {metrics['dp_avg_generation_count']:.2f}")
+        print(f"  dp_avg_repair_attempts: {metrics['dp_avg_repair_attempts']:.2f}")
         print(f"  dp_label_accuracy: {metrics['dp_label_accuracy']:.4f}")
         print(f"  dp_execution_rate: {metrics['dp_execution_rate']:.4f}")
         print(f"  dp_path_execution_rate: {metrics['dp_path_execution_rate']:.4f}")
@@ -1841,6 +1972,7 @@ def main() -> None:
         raise ValueError("--paths must be greater than 0.")
     if args.repair_rounds < 0:
         raise ValueError("--repair-rounds must be greater than or equal to 0.")
+    args.repair_status_set = parse_repair_statuses(args.repair_statuses)
 
     set_seed(args.seed)
     records = load_jsonl_dataset(args.dataset, args.limit)
