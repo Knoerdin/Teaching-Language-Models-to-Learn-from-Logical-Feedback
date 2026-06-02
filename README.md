@@ -109,6 +109,20 @@ sbatch --export=ALL,MODEL_NAME=sft,MODEL_PATH=outputs/sft_qwen3.5-9b/checkpoint-
 The full D&P SLURM job also accepts `PATHS`, `REPAIR_ROUNDS`,
 `REPAIR_STATUSES`, `BATCH_SIZE`, and `LIMIT` through `sbatch --export`.
 
+To compute a cheap single-path baseline from existing D&P predictions without
+calling the model again, score one saved path per example:
+
+```bash
+PYTHONPATH=src python src/evaluate_saved_dp_paths.py \
+  --predictions sft_path1=outputs/evaluations/qwen3.5-9b-dp/sft_predictions.jsonl \
+  --predictions grpo_final_path1=outputs/evaluations/grpo_final_20260531_dp/grpo_final_20260531_predictions.jsonl \
+  --output-dir outputs/evaluations/offline_single_path_from_dp/path1
+```
+
+This measures a single saved D&P path without majority voting. It does not
+reconstruct a true direct-prompt non-D&P generation, because those generations
+were not produced by the D&P run.
+
 When `--output-dir` is set, the evaluator also writes Markdown reports under
 `OUTPUT_DIR/eval_reports/`, separated into `grpo/` and `sft/` subfolders when
 the model name or path indicates the trainer type. Each model report includes
