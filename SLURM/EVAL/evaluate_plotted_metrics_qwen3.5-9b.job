@@ -1,0 +1,227 @@
+#!/bin/bash
+#SBATCH --job-name=eval_plotted_qwen35_9b
+#SBATCH --output=SLURM/logs/EVAL/job_%j.out
+#SBATCH --error=SLURM/logs/EVAL/job_%j.out
+#SBATCH --time=04:00:00
+#SBATCH --partition=gpu_h100
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=180G
+
+set -euo pipefail
+
+module purge
+module load 2024
+module load Python/3.12.3-GCCcore-13.3.0
+
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$PWD}"
+PROJECT_DIR="$SUBMIT_DIR"
+while [ "$PROJECT_DIR" != "/" ] && [ ! -f "$PROJECT_DIR/pyproject.toml" ]; do
+  PROJECT_DIR="$(cd "$PROJECT_DIR/.." && pwd)"
+done
+
+if [ ! -f "$PROJECT_DIR/pyproject.toml" ]; then
+  echo "Could not find project directory from submit directory: $SUBMIT_DIR"
+  echo "Submit from the repo root, SLURM directory, or a SLURM job subdirectory."
+  exit 1
+fi
+
+cd "$PROJECT_DIR"
+
+OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/final_eval_runs}"
+RUN_NAME="${RUN_NAME:-plotted_metrics_${SLURM_JOB_ID:-manual}_$(date +%Y%m%d_%H%M%S)}"
+RUN_DIR="${RUN_DIR:-$OUTPUT_ROOT/$RUN_NAME}"
+EVAL_DIR="${EVAL_DIR:-$RUN_DIR/evaluation}"
+PLOT_DIR="${PLOT_DIR:-$RUN_DIR/plots}"
+RUNTIME_LOG_DIR="$RUN_DIR/slurm_logs"
+mkdir -p "$EVAL_DIR" "$PLOT_DIR" "$RUNTIME_LOG_DIR"
+RUNTIME_LOG="$RUNTIME_LOG_DIR/runtime_${SLURM_JOB_ID:-manual}.log"
+exec > >(tee -a "$RUNTIME_LOG") 2>&1
+
+echo "[$(date)] Starting ${SLURM_JOB_NAME:-job} ${SLURM_JOB_ID:-unknown} on $(hostname)"
+echo "Submit directory: ${SLURM_SUBMIT_DIR:-unknown}"
+echo "Project directory: $PROJECT_DIR"
+echo "Run directory: $RUN_DIR"
+echo "Runtime log: $RUNTIME_LOG"
+
+if [ ! -f .venv/bin/activate ]; then
+  echo "No .venv found. Prepare the Snellius evaluation environment first."
+  exit 1
+fi
+source .venv/bin/activate
+
+export PYTHONUNBUFFERED=1
+export MLFLOW_TRACE_SAMPLING_RATIO="${MLFLOW_TRACE_SAMPLING_RATIO:-0.0}"
+export MLFLOW_ENABLE_ASYNC_TRACE_LOGGING="${MLFLOW_ENABLE_ASYNC_TRACE_LOGGING:-false}"
+export USE_TF=0
+export USE_FLAX=0
+export USE_JAX=0
+export TRANSFORMERS_NO_TF=1
+export TRANSFORMERS_NO_FLAX=1
+export TOKENIZERS_PARALLELISM=false
+export HF_HUB_DISABLE_TELEMETRY=1
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
+
+if [ -z "${VAMPIRE_BIN:-}" ]; then
+  for candidate in \
+    "$PROJECT_DIR/../vampire-src/vampire" \
+    "$PROJECT_DIR/../vampire-src/bin/vampire" \
+    "$PROJECT_DIR/../vampire-src/build/vampire" \
+    "$PROJECT_DIR/../vampire-src/build/bin/vampire"; do
+    if [ -x "$candidate" ]; then
+      export VAMPIRE_BIN="$candidate"
+      break
+    fi
+  done
+fi
+
+if [ -z "${VAMPIRE_BIN:-}" ] || [ ! -x "$VAMPIRE_BIN" ]; then
+  echo "Could not find an executable Vampire binary."
+  echo "Set VAMPIRE_BIN=/path/to/vampire when submitting, or build Vampire under ../vampire-src."
+  if [ -d "$PROJECT_DIR/../vampire-src" ]; then
+    echo "Executable-looking files under ../vampire-src:"
+    find "$PROJECT_DIR/../vampire-src" -maxdepth 4 -type f -perm -u=x -print | sort | head -50
+  fi
+  exit 1
+fi
+echo "Using Vampire: $VAMPIRE_BIN"
+
+first_existing_path() {
+  for candidate in "$@"; do
+    if [ -e "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+  printf '%s\n' "$1"
+}
+
+sanitize_name() {
+  local sanitized
+  sanitized="$(printf '%s' "$1" | sed -E 's/[^A-Za-z0-9_.-]+/_/g; s/^[._]+//; s/[._]+$//')"
+  printf '%s\n' "${sanitized:-model}"
+}
+
+SFT_MODEL_NAME="${SFT_MODEL_NAME:-sft}"
+SFT_MODEL_PATH="${SFT_MODEL_PATH:-$(first_existing_path \
+  outputs/sft_qwen3.5-9b/final_20260531_1521_sft/checkpoint-1000 \
+  outputs/sft_qwen3.5-9b/checkpoint-1000)}"
+GRPO_MODEL_NAME="${GRPO_MODEL_NAME:-grpo_final}"
+GRPO_MODEL_PATH="${GRPO_MODEL_PATH:-$(first_existing_path \
+  outputs/grpo_qwen3.5-9b/final_20260531_1521_grpo \
+  outputs/grpo_qwen3.5-9b/final_20260531_1521_grpo/checkpoint-2000 \
+  outputs/grpo_qwen3.5-9b/checkpoint-3000)}"
+SFT_PLOT_LABEL="${SFT_PLOT_LABEL:-SFT step 1000}"
+GRPO_PLOT_LABEL="${GRPO_PLOT_LABEL:-GRPO final}"
+
+DATASET="${DATASET:-DATA/FOLIO/folio_test.jsonl}"
+LIMIT="${LIMIT:-}"
+BATCH_SIZE="${BATCH_SIZE:-4}"
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-256}"
+MAX_INPUT_TOKENS="${MAX_INPUT_TOKENS:-}"
+DEVICE="${DEVICE:-auto}"
+TORCH_DTYPE="${TORCH_DTYPE:-auto}"
+TEMPERATURE="${TEMPERATURE:-0.0}"
+TOP_P="${TOP_P:-1.0}"
+INCLUDE_GOLD_SCHEMA="${INCLUDE_GOLD_SCHEMA:-0}"
+POSTPROCESS="${POSTPROCESS:-0}"
+INCLUDE_PROMPT="${INCLUDE_PROMPT:-0}"
+LOG_EVERY="${LOG_EVERY:-25}"
+PLOT_DPI="${PLOT_DPI:-300}"
+
+echo "Python: $(command -v python)"
+python --version
+echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
+nvidia-smi
+free -h
+
+echo "Checking evaluation environment"
+python - <<'PY'
+import importlib.metadata as md
+import importlib.util
+import agent_reasoning
+
+print("agent_reasoning:", agent_reasoning.__file__)
+print("pipeline:", importlib.util.find_spec("agent_reasoning.pipeline"))
+print("symbolic_solver:", importlib.util.find_spec("agent_reasoning.symbolic_solver"))
+print("antlr4-python3-runtime:", md.version("antlr4-python3-runtime"))
+PY
+
+PYTHONPATH=src python - <<'PY'
+from REWARDS.proving import get_solver
+
+solver = get_solver()
+print("solver:", type(solver))
+PY
+
+for model_path in "$SFT_MODEL_PATH" "$GRPO_MODEL_PATH"; do
+  if [ ! -e "$model_path" ]; then
+    echo "Model path does not exist: $model_path"
+    exit 1
+  fi
+  if [ ! -f "$model_path/adapter_config.json" ] && [ ! -f "$model_path/config.json" ]; then
+    echo "Model path is not a PEFT adapter or full HF model directory: $model_path"
+    echo "Expected adapter_config.json or config.json."
+    echo "Files under model path:"
+    find "$model_path" -maxdepth 1 -type f -printf "%f\n" | sort
+    exit 1
+  fi
+done
+
+EVAL_ARGS=(
+  src/evaluate_plotted_metrics.py
+  --dataset "$DATASET"
+  --model "${SFT_MODEL_NAME}=${SFT_MODEL_PATH}"
+  --model "${GRPO_MODEL_NAME}=${GRPO_MODEL_PATH}"
+  --batch-size "$BATCH_SIZE"
+  --max-new-tokens "$MAX_NEW_TOKENS"
+  --device "$DEVICE"
+  --torch-dtype "$TORCH_DTYPE"
+  --temperature "$TEMPERATURE"
+  --top-p "$TOP_P"
+  --output-dir "$EVAL_DIR"
+  --log-every "$LOG_EVERY"
+)
+
+if [ -n "$LIMIT" ]; then
+  EVAL_ARGS+=(--limit "$LIMIT")
+fi
+if [ -n "$MAX_INPUT_TOKENS" ]; then
+  EVAL_ARGS+=(--max-input-tokens "$MAX_INPUT_TOKENS")
+fi
+if [ "$INCLUDE_GOLD_SCHEMA" = "1" ]; then
+  EVAL_ARGS+=(--include-gold-schema)
+fi
+if [ "$POSTPROCESS" = "1" ]; then
+  EVAL_ARGS+=(--postprocess)
+fi
+if [ "$INCLUDE_PROMPT" = "1" ]; then
+  EVAL_ARGS+=(--include-prompt)
+fi
+
+echo "[$(date)] Launching direct plotted-metrics evaluation"
+printf 'Command: python -u'
+printf ' %q' "${EVAL_ARGS[@]}"
+printf '\n'
+python -u "${EVAL_ARGS[@]}"
+
+SFT_PREDICTIONS="$EVAL_DIR/$(sanitize_name "$SFT_MODEL_NAME")_predictions.jsonl"
+GRPO_PREDICTIONS="$EVAL_DIR/$(sanitize_name "$GRPO_MODEL_NAME")_predictions.jsonl"
+PLOT_ARGS=(
+  src/plot_evaluation_metrics.py
+  --prediction "${SFT_PLOT_LABEL}=${SFT_PREDICTIONS}"
+  --prediction "${GRPO_PLOT_LABEL}=${GRPO_PREDICTIONS}"
+  --output-dir "$PLOT_DIR"
+  --dpi "$PLOT_DPI"
+)
+
+echo "[$(date)] Plotting final evaluation metrics"
+printf 'Command: python -u'
+printf ' %q' "${PLOT_ARGS[@]}"
+printf '\n'
+python -u "${PLOT_ARGS[@]}"
+
+echo "[$(date)] Final evaluation finished"
+echo "Metrics and predictions: $EVAL_DIR"
+echo "Plots: $PLOT_DIR"
+echo "Runtime log: $RUNTIME_LOG"

@@ -724,6 +724,84 @@ def dataset_label_to_solver_prediction(label: str | None) -> str | None:
     return DATASET_TO_SOLVER_LABEL.get(label)
 
 
+def normalize_optional_dataset_label(value: Any) -> str | None:
+    if value is None:
+        return None
+    label = normalize_label(str(value))
+    if label in DP_LABELS:
+        return label
+    return None
+
+
+def label_prediction_from_result(result: dict[str, Any]) -> str | None:
+    if "dp_prediction" in result:
+        return normalize_optional_dataset_label(result.get("dp_prediction"))
+    if str(result.get("prover_status") or "") in UNEXECUTABLE_PROVER_STATUSES:
+        return None
+    return solver_prediction_to_dataset_label(result.get("prover_prediction"))
+
+
+def label_classification_metrics(results: list[dict[str, Any]]) -> dict[str, float]:
+    if not results or not any(
+        "dp_prediction" in result or "prover_prediction" in result
+        for result in results
+    ):
+        return {}
+
+    gold_predictions = [
+        (
+            normalize_label(str(result.get("label", ""))),
+            label_prediction_from_result(result),
+        )
+        for result in results
+    ]
+    total = len(gold_predictions)
+    correct = sum(1 for gold, prediction in gold_predictions if prediction == gold)
+    metrics: dict[str, float] = {
+        "label_accuracy": correct / total if total else 0.0,
+    }
+
+    f1_scores = []
+    for label in DP_LABELS:
+        true_positive = sum(
+            1
+            for gold, prediction in gold_predictions
+            if gold == label and prediction == label
+        )
+        false_positive = sum(
+            1
+            for gold, prediction in gold_predictions
+            if gold != label and prediction == label
+        )
+        false_negative = sum(
+            1
+            for gold, prediction in gold_predictions
+            if gold == label and prediction != label
+        )
+        precision = (
+            true_positive / (true_positive + false_positive)
+            if true_positive + false_positive
+            else 0.0
+        )
+        recall = (
+            true_positive / (true_positive + false_negative)
+            if true_positive + false_negative
+            else 0.0
+        )
+        f1 = (
+            2.0 * precision * recall / (precision + recall)
+            if precision + recall
+            else 0.0
+        )
+        metrics[f"label_{label}_precision"] = precision
+        metrics[f"label_{label}_recall"] = recall
+        metrics[f"label_{label}_f1"] = f1
+        f1_scores.append(f1)
+
+    metrics["label_macro_f1"] = mean(f1_scores)
+    return metrics
+
+
 def annotate_path_result(result: dict[str, Any], record: dict[str, Any]) -> None:
     path_label = solver_prediction_to_dataset_label(result.get("prover_prediction"))
     status = str(result.get("prover_status") or "")
@@ -942,6 +1020,9 @@ def aggregate_draft_and_prune_result(
     )
 
     result = dict(selected_path)
+    selected_path_prover_status = result.get("prover_status")
+    selected_path_prover_prediction = result.get("prover_prediction")
+    selected_path_prover_label_correct = result.get("prover_label_correct")
     correct_paths = sum(
         1 for path_result in path_results if path_result["dp_path_label_correct"]
     )
@@ -976,25 +1057,27 @@ def aggregate_draft_and_prune_result(
             "dp_prediction": predicted_label,
             "dp_solver_prediction": dataset_label_to_solver_prediction(predicted_label),
             "dp_label_correct": dp_label_correct,
-            "dp_hit": correct_paths > 0,
-            "dp_tie": tie,
-            "dp_abstained": predicted_label is None,
-            "dp_vote_counts": dict(sorted(vote_counts.items())),
-            "dp_vote_entropy": normalized_vote_entropy(vote_counts),
-            "dp_selected_path_index": result.get("dp_path_index"),
-            "dp_path_status_counts": dict(sorted(path_status_counts.items())),
-            "dp_pruned_status_counts": dict(sorted(pruned_status_counts.items())),
-            "dp_paths": [compact_path_result(path_result) for path_result in path_results],
-            "prover_status": (
+            "dp_status": (
                 "correct"
                 if dp_label_correct
                 else "incorrect"
                 if predicted_label is not None
                 else "all_paths_pruned"
             ),
-            "prover_prediction": dataset_label_to_solver_prediction(predicted_label),
-            "prover_label_correct": dp_label_correct,
-            "prover_feedback": None,
+            "dp_hit": correct_paths > 0,
+            "dp_tie": tie,
+            "dp_abstained": predicted_label is None,
+            "dp_vote_counts": dict(sorted(vote_counts.items())),
+            "dp_vote_entropy": normalized_vote_entropy(vote_counts),
+            "dp_selected_path_index": result.get("dp_path_index"),
+            "dp_selected_path_prover_status": selected_path_prover_status,
+            "dp_selected_path_prover_prediction": selected_path_prover_prediction,
+            "dp_selected_path_prover_label_correct": (
+                selected_path_prover_label_correct
+            ),
+            "dp_path_status_counts": dict(sorted(path_status_counts.items())),
+            "dp_pruned_status_counts": dict(sorted(pruned_status_counts.items())),
+            "dp_paths": [compact_path_result(path_result) for path_result in path_results],
         }
     )
     return result
@@ -1074,6 +1157,9 @@ def summarize_results(
     total = len(results)
     if total == 0:
         raise ValueError("No examples were evaluated.")
+    has_draft_and_prune = any(
+        result.get("draft_and_prune", False) for result in results
+    )
 
     def rate(key: str) -> float:
         return sum(1 for result in results if result[key]) / total
@@ -1119,8 +1205,9 @@ def summarize_results(
             float(result.get("postprocessing_changed", False)) for result in results
         ),
     }
+    metrics.update(label_classification_metrics(results))
 
-    if run_prover:
+    if run_prover and not has_draft_and_prune:
         prover_status_counts = Counter(result["prover_status"] for result in results)
         attempted = total - sum(
             prover_status_counts.get(status, 0)
@@ -1134,7 +1221,7 @@ def summarize_results(
         metrics["prover_attempted"] = attempted
         metrics["prover_status_counts"] = dict(sorted(prover_status_counts.items()))
 
-    if any(result.get("draft_and_prune", False) for result in results):
+    if has_draft_and_prune:
         total_paths = sum(int(result.get("dp_total_paths", 0)) for result in results)
         surviving_paths = sum(
             int(result.get("dp_surviving_paths", 0)) for result in results

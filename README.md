@@ -123,6 +123,48 @@ This measures a single saved D&P path without majority voting. It does not
 reconstruct a true direct-prompt non-D&P generation, because those generations
 were not produced by the D&P run.
 
+To evaluate only the metrics used in the paper-style per-model plots without
+Draft-and-Prune, run the lightweight direct evaluator:
+
+```bash
+PYTHONPATH=src python src/evaluate_plotted_metrics.py \
+  --dataset DATA/FOLIO/folio_test.jsonl \
+  --model sft=outputs/sft_qwen3.5-9b/checkpoint-1000 \
+  --model grpo_final=outputs/grpo_qwen3.5-9b/final_20260531_1521_grpo/checkpoint-2000 \
+  --output-dir outputs/evaluations/plotted_metrics
+```
+
+This evaluator does one direct generation per example and always runs the prover
+for label accuracy/F1. It does not sample D&P paths, run repairs, or report D&P
+search-shape metrics. To plot those outputs, use:
+
+```bash
+PYTHONPATH=src python src/plot_evaluation_metrics.py \
+  --prediction "SFT step 1000=outputs/evaluations/plotted_metrics/sft_predictions.jsonl" \
+  --prediction "GRPO final=outputs/evaluations/plotted_metrics/grpo_final_predictions.jsonl" \
+  --output-dir outputs/evaluations/comparison_plots
+```
+
+Each model gets its own plot. The plot intentionally omits D&P search-shape
+metrics and shows only label accuracy, parse rate, gold-FOL exact accuracy, and
+label F1 scores.
+
+On Snellius, run the same direct final evaluation through SLURM:
+
+```bash
+SLURM/submit_and_tail.sh EVAL/evaluate_plotted_metrics_qwen3.5-9b_smoke.job
+SLURM/submit_and_tail.sh EVAL/evaluate_plotted_metrics_qwen3.5-9b.job
+```
+
+These jobs write metrics, predictions, plots, and a runtime log under
+`outputs/final_eval_runs/<run-name>/`. Override paths or labels from `sbatch`
+when needed, for example:
+
+```bash
+sbatch --export=ALL,RUN_NAME=final_eval_qwen35,SFT_MODEL_PATH=outputs/sft_qwen3.5-9b/checkpoint-1000 \
+  SLURM/EVAL/evaluate_plotted_metrics_qwen3.5-9b.job
+```
+
 When `--output-dir` is set, the evaluator also writes Markdown reports under
 `OUTPUT_DIR/eval_reports/`, separated into `grpo/` and `sft/` subfolders when
 the model name or path indicates the trainer type. Each model report includes
