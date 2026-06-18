@@ -44,11 +44,63 @@ echo "Project directory: $PROJECT_DIR"
 echo "Run directory: $RUN_DIR"
 echo "Runtime log: $RUNTIME_LOG"
 
-if [ ! -f .venv/bin/activate ]; then
-  echo "No .venv found. Prepare the Snellius evaluation environment first."
+EVAL_VENV="${EVAL_VENV:-}"
+if [ -z "$EVAL_VENV" ]; then
+  for candidate in ".venv_eval" "eval_venv" ".venv"; do
+    if [ -f "$candidate/bin/activate" ]; then
+      EVAL_VENV="$candidate"
+      break
+    fi
+  done
+fi
+
+if [ -z "$EVAL_VENV" ] || [ ! -f "$EVAL_VENV/bin/activate" ]; then
+  echo "Could not find an evaluation virtualenv."
+  echo "Set EVAL_VENV=/path/to/eval/env when submitting, or create .venv_eval."
   exit 1
 fi
-source .venv/bin/activate
+echo "Using evaluation environment: $EVAL_VENV"
+source "$EVAL_VENV/bin/activate"
+
+python - <<'PY'
+import sys
+
+if sys.version_info[:2] != (3, 12):
+    raise SystemExit(
+        "This evaluation requires Python 3.12, but the active environment uses "
+        f"{sys.version.split()[0]}. Recreate the eval environment after loading "
+        "Python/3.12.3-GCCcore-13.3.0."
+    )
+PY
+
+PROJECT_PYTHONPATH="$PROJECT_DIR/src"
+AGENT_REASONING_SRC="${AGENT_REASONING_SRC:-}"
+if [ -z "$AGENT_REASONING_SRC" ]; then
+  for candidate in \
+    "$PROJECT_DIR/../agent_reasoning_rl/src" \
+    "$PROJECT_DIR/../agent_reasoning_rl" \
+    "$PROJECT_DIR/../agent_reasoning_rl/agent_reasoning_rl/src" \
+    "$PROJECT_DIR/../agent_reasoning_rl/agent_reasoning_rl"; do
+    if [ -d "$candidate/agent_reasoning" ]; then
+      AGENT_REASONING_SRC="$candidate"
+      break
+    fi
+  done
+fi
+
+if [ -n "$AGENT_REASONING_SRC" ]; then
+  if [ ! -d "$AGENT_REASONING_SRC/agent_reasoning" ]; then
+    echo "AGENT_REASONING_SRC must point to the directory containing agent_reasoning/."
+    echo "Got: $AGENT_REASONING_SRC"
+    exit 1
+  fi
+  PROJECT_PYTHONPATH="$PROJECT_PYTHONPATH:$AGENT_REASONING_SRC"
+  export AGENT_REASONING_SRC
+  echo "Using agent_reasoning source: $AGENT_REASONING_SRC"
+else
+  echo "No sibling agent_reasoning source detected; relying on installed package."
+fi
+export PYTHONPATH="$PROJECT_PYTHONPATH${PYTHONPATH:+:$PYTHONPATH}"
 
 export PYTHONUNBUFFERED=1
 export MLFLOW_TRACE_SAMPLING_RATIO="${MLFLOW_TRACE_SAMPLING_RATIO:-0.0}"
@@ -131,6 +183,7 @@ PLOT_DPI="${PLOT_DPI:-300}"
 
 echo "Python: $(command -v python)"
 python --version
+echo "PYTHONPATH=$PYTHONPATH"
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-unset}"
 nvidia-smi
 free -h
@@ -138,16 +191,23 @@ free -h
 echo "Checking evaluation environment"
 python - <<'PY'
 import importlib.metadata as md
-import importlib.util
-import agent_reasoning
+import os
+from pathlib import Path
 
-print("agent_reasoning:", agent_reasoning.__file__)
-print("pipeline:", importlib.util.find_spec("agent_reasoning.pipeline"))
-print("symbolic_solver:", importlib.util.find_spec("agent_reasoning.symbolic_solver"))
-print("antlr4-python3-runtime:", md.version("antlr4-python3-runtime"))
+agent_source = os.environ.get("AGENT_REASONING_SRC")
+if agent_source:
+    print("AGENT_REASONING_SRC:", agent_source)
+    print("agent_reasoning source exists:", (Path(agent_source) / "agent_reasoning").is_dir())
+else:
+    print("AGENT_REASONING_SRC: unset")
+for package_name in ("antlr4-python3-runtime", "pydantic", "mlflow", "omegaconf"):
+    try:
+        print(f"{package_name}:", md.version(package_name))
+    except md.PackageNotFoundError:
+        print(f"{package_name}: not installed")
 PY
 
-PYTHONPATH=src python - <<'PY'
+PYTHONPATH="$PROJECT_PYTHONPATH" python - <<'PY'
 from REWARDS.proving import get_solver
 
 solver = get_solver()

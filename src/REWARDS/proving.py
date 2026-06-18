@@ -2,6 +2,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 import io
 import os
+import sys
+import types
 import warnings
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -23,6 +25,35 @@ LABEL_MAP = {
 
 class SolverUnavailableError(RuntimeError):
     pass
+
+
+def _install_agent_reasoning_source_shims() -> None:
+    source = os.environ.get("AGENT_REASONING_SRC")
+    if not source:
+        return
+
+    package_dir = Path(source).expanduser() / "agent_reasoning"
+    if not package_dir.is_dir():
+        raise SolverUnavailableError(
+            "AGENT_REASONING_SRC must point to the directory containing "
+            f"agent_reasoning/. Got: {source}"
+        )
+
+    package_specs = {
+        "agent_reasoning": package_dir,
+        "agent_reasoning.symbolic_solver": package_dir / "symbolic_solver",
+        "agent_reasoning.symbolic_solver.fol": package_dir / "symbolic_solver" / "fol",
+    }
+    for module_name, module_dir in package_specs.items():
+        if module_name in sys.modules:
+            continue
+        module = types.ModuleType(module_name)
+        module.__file__ = str(module_dir / "__init__.py")
+        module.__path__ = [str(module_dir)]
+        module.__package__ = module_name
+        if module_name == "agent_reasoning":
+            module.__version__ = "0.0.1.dev1"
+        sys.modules[module_name] = module
 
 
 def _disable_mlflow_traces() -> None:
@@ -50,20 +81,33 @@ class ProverReward:
 @lru_cache(maxsize=1)
 def _solver_dependencies():
     _disable_mlflow_traces()
+    _install_agent_reasoning_source_shims()
 
     try:
         from agent_reasoning.pipeline import CombinedReasoningProblem
-        from agent_reasoning.symbolic_solver import TheoremProverPipeline
-        from agent_reasoning.symbolic_solver.fol import TPTPParser, FOLLinter
+        from agent_reasoning.symbolic_solver.solver import TheoremProverPipeline
+        from agent_reasoning.symbolic_solver.fol.tools import FOLLinter, TPTPParser
         from agent_reasoning.symbolic_solver.fol.tools import VampireReasoner
     except ModuleNotFoundError as exc:
         missing_package = exc.name or "unknown package"
+        if os.environ.get("AGENT_REASONING_SRC"):
+            install_hint = (
+                "When using AGENT_REASONING_SRC, install the solver runtime "
+                "dependencies directly, e.g. antlr4-python3-runtime==4.9.3, "
+                "pydantic, mlflow, and omegaconf, and install agent_reasoning "
+                "with --no-deps."
+            )
+        else:
+            install_hint = (
+                "Create/use a Python 3.12 environment and run "
+                "`python -m pip install -e .`. If you want the sibling checkout "
+                "instead, run `python -m pip install -e ../agent_reasoning_rl` "
+                "in that same environment."
+            )
         raise SolverUnavailableError(
             "FOL solver dependencies are not installed. "
             "This project now requires Python 3.12 and agent-reasoning. "
-            "Create/use a Python 3.12 environment and run `python -m pip install -e .`. "
-            "If you want the sibling checkout instead, run "
-            "`python -m pip install -e ../agent_reasoning_rl` in that same environment. "
+            f"{install_hint} "
             f"Missing import: {missing_package}."
         ) from exc
 

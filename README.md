@@ -152,16 +152,23 @@ label F1 scores.
 On Snellius, run the same direct final evaluation through SLURM:
 
 ```bash
-SLURM/submit_and_tail.sh EVAL/evaluate_plotted_metrics_qwen3.5-9b_smoke.job
-SLURM/submit_and_tail.sh EVAL/evaluate_plotted_metrics_qwen3.5-9b.job
+SLURM/submit_and_tail.sh \
+  --export=ALL,EVAL_VENV=/path/to/eval/env,VAMPIRE_BIN=/path/to/vampire,AGENT_REASONING_SRC=/path/to/agent_reasoning_rl/src \
+  EVAL/evaluate_plotted_metrics_qwen3.5-9b_smoke.job
+
+SLURM/submit_and_tail.sh \
+  --export=ALL,EVAL_VENV=/path/to/eval/env,VAMPIRE_BIN=/path/to/vampire,AGENT_REASONING_SRC=/path/to/agent_reasoning_rl/src \
+  EVAL/evaluate_plotted_metrics_qwen3.5-9b.job
 ```
 
 These jobs write metrics, predictions, plots, and a runtime log under
-`outputs/final_eval_runs/<run-name>/`. Override paths or labels from `sbatch`
-when needed, for example:
+`outputs/final_eval_runs/<run-name>/`. `EVAL_VENV` should point to a Python
+3.12 evaluation environment; if it is omitted, the job tries `.venv_eval`,
+`eval_venv`, then `.venv`. Override paths or labels from `sbatch` when needed,
+for example:
 
 ```bash
-sbatch --export=ALL,RUN_NAME=final_eval_qwen35,SFT_MODEL_PATH=outputs/sft_qwen3.5-9b/checkpoint-1000 \
+sbatch --export=ALL,RUN_NAME=final_eval_qwen35,EVAL_VENV=/path/to/eval/env,SFT_MODEL_PATH=outputs/sft_qwen3.5-9b/checkpoint-1000 \
   SLURM/EVAL/evaluate_plotted_metrics_qwen3.5-9b.job
 ```
 
