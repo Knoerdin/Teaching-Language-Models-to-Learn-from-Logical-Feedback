@@ -138,7 +138,33 @@ if [ -z "${VAMPIRE_BIN:-}" ] || [ ! -x "$VAMPIRE_BIN" ]; then
 fi
 echo "Using Vampire: $VAMPIRE_BIN"
 
-first_existing_path() {
+is_model_dir() {
+  local candidate="$1"
+  [ -f "$candidate/adapter_config.json" ] || [ -f "$candidate/config.json" ]
+}
+
+first_model_path() {
+  local fallback="$1"
+  local candidate
+  local found
+
+  for candidate in "$@"; do
+    if is_model_dir "$candidate"; then
+      printf '%s\n' "$candidate"
+      return
+    fi
+  done
+
+  for candidate in "$@"; do
+    if [ -d "$candidate" ]; then
+      found="$(find "$candidate" -maxdepth 4 -type f \( -name adapter_config.json -o -name config.json \) -print -quit 2>/dev/null || true)"
+      if [ -n "$found" ]; then
+        dirname "$found"
+        return
+      fi
+    fi
+  done
+
   for candidate in "$@"; do
     if [ -e "$candidate" ]; then
       printf '%s\n' "$candidate"
@@ -155,11 +181,12 @@ sanitize_name() {
 }
 
 SFT_MODEL_NAME="${SFT_MODEL_NAME:-sft}"
-SFT_MODEL_PATH="${SFT_MODEL_PATH:-$(first_existing_path \
+SFT_MODEL_PATH="${SFT_MODEL_PATH:-$(first_model_path \
   outputs/sft_qwen3.5-9b/final_20260531_1521_sft/checkpoint-1000 \
+  outputs/sft_qwen3.5-9b/final_20260531_1521_sft \
   outputs/sft_qwen3.5-9b/checkpoint-1000)}"
 GRPO_MODEL_NAME="${GRPO_MODEL_NAME:-grpo_final}"
-GRPO_MODEL_PATH="${GRPO_MODEL_PATH:-$(first_existing_path \
+GRPO_MODEL_PATH="${GRPO_MODEL_PATH:-$(first_model_path \
   outputs/grpo_qwen3.5-9b/final_20260531_1521_grpo \
   outputs/grpo_qwen3.5-9b/final_20260531_1521_grpo/checkpoint-2000 \
   outputs/grpo_qwen3.5-9b/checkpoint-3000)}"
@@ -224,6 +251,8 @@ for model_path in "$SFT_MODEL_PATH" "$GRPO_MODEL_PATH"; do
     echo "Expected adapter_config.json or config.json."
     echo "Files under model path:"
     find "$model_path" -maxdepth 1 -type f -printf "%f\n" | sort
+    echo "Model-looking directories under outputs:"
+    find outputs -maxdepth 6 -type f \( -name adapter_config.json -o -name config.json \) -printf "%h\n" 2>/dev/null | sort -u | head -100
     exit 1
   fi
 done
