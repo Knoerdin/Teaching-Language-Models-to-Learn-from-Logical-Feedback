@@ -143,6 +143,16 @@ is_model_dir() {
   [ -f "$candidate/adapter_config.json" ] || [ -f "$candidate/config.json" ]
 }
 
+is_local_model_path() {
+  local candidate="$1"
+  case "$candidate" in
+    /*|./*|../*|~/*|outputs/*|checkpoints/*|runs/*|model_artifacts/*)
+      return 0
+      ;;
+  esac
+  [ -e "$candidate" ]
+}
+
 first_model_path() {
   local fallback="$1"
   local candidate
@@ -180,6 +190,9 @@ sanitize_name() {
   printf '%s\n' "${sanitized:-model}"
 }
 
+INCLUDE_BASE_MODEL="${INCLUDE_BASE_MODEL:-1}"
+BASE_MODEL_NAME="${BASE_MODEL_NAME:-base}"
+BASE_MODEL_PATH="${BASE_MODEL_PATH:-Qwen/Qwen3.5-9B}"
 SFT_MODEL_NAME="${SFT_MODEL_NAME:-sft}"
 SFT_MODEL_PATH="${SFT_MODEL_PATH:-$(first_model_path \
   outputs/sft_qwen3.5-9b/final_20260531_1521_sft/checkpoint-1000 \
@@ -190,6 +203,7 @@ GRPO_MODEL_PATH="${GRPO_MODEL_PATH:-$(first_model_path \
   outputs/grpo_qwen3.5-9b/final_20260531_1521_grpo \
   outputs/grpo_qwen3.5-9b/final_20260531_1521_grpo/checkpoint-2000 \
   outputs/grpo_qwen3.5-9b/checkpoint-3000)}"
+BASE_PLOT_LABEL="${BASE_PLOT_LABEL:-Qwen3.5-9B base}"
 SFT_PLOT_LABEL="${SFT_PLOT_LABEL:-SFT step 1000}"
 GRPO_PLOT_LABEL="${GRPO_PLOT_LABEL:-GRPO final}"
 
@@ -241,7 +255,35 @@ solver = get_solver()
 print("solver:", type(solver))
 PY
 
-for model_path in "$SFT_MODEL_PATH" "$GRPO_MODEL_PATH"; do
+MODEL_ARGS=()
+MODEL_PATHS=()
+PLOT_ARGS=(
+  src/plot_evaluation_metrics.py
+)
+
+if [ "$INCLUDE_BASE_MODEL" = "1" ]; then
+  MODEL_ARGS+=(--model "${BASE_MODEL_NAME}=${BASE_MODEL_PATH}")
+  MODEL_PATHS+=("$BASE_MODEL_PATH")
+  BASE_PREDICTIONS="$EVAL_DIR/$(sanitize_name "$BASE_MODEL_NAME")_predictions.jsonl"
+  PLOT_ARGS+=(--prediction "${BASE_PLOT_LABEL}=${BASE_PREDICTIONS}")
+  echo "Including base model: ${BASE_MODEL_NAME}=${BASE_MODEL_PATH}"
+fi
+
+MODEL_ARGS+=(--model "${SFT_MODEL_NAME}=${SFT_MODEL_PATH}")
+MODEL_ARGS+=(--model "${GRPO_MODEL_NAME}=${GRPO_MODEL_PATH}")
+MODEL_PATHS+=("$SFT_MODEL_PATH")
+MODEL_PATHS+=("$GRPO_MODEL_PATH")
+
+SFT_PREDICTIONS="$EVAL_DIR/$(sanitize_name "$SFT_MODEL_NAME")_predictions.jsonl"
+GRPO_PREDICTIONS="$EVAL_DIR/$(sanitize_name "$GRPO_MODEL_NAME")_predictions.jsonl"
+PLOT_ARGS+=(--prediction "${SFT_PLOT_LABEL}=${SFT_PREDICTIONS}")
+PLOT_ARGS+=(--prediction "${GRPO_PLOT_LABEL}=${GRPO_PREDICTIONS}")
+
+for model_path in "${MODEL_PATHS[@]}"; do
+  if ! is_local_model_path "$model_path"; then
+    echo "Assuming remote/base model id: $model_path"
+    continue
+  fi
   if [ ! -e "$model_path" ]; then
     echo "Model path does not exist: $model_path"
     exit 1
@@ -260,8 +302,7 @@ done
 EVAL_ARGS=(
   src/evaluate_plotted_metrics.py
   --dataset "$DATASET"
-  --model "${SFT_MODEL_NAME}=${SFT_MODEL_PATH}"
-  --model "${GRPO_MODEL_NAME}=${GRPO_MODEL_PATH}"
+  "${MODEL_ARGS[@]}"
   --batch-size "$BATCH_SIZE"
   --max-new-tokens "$MAX_NEW_TOKENS"
   --device "$DEVICE"
@@ -294,12 +335,7 @@ printf ' %q' "${EVAL_ARGS[@]}"
 printf '\n'
 python -u "${EVAL_ARGS[@]}"
 
-SFT_PREDICTIONS="$EVAL_DIR/$(sanitize_name "$SFT_MODEL_NAME")_predictions.jsonl"
-GRPO_PREDICTIONS="$EVAL_DIR/$(sanitize_name "$GRPO_MODEL_NAME")_predictions.jsonl"
-PLOT_ARGS=(
-  src/plot_evaluation_metrics.py
-  --prediction "${SFT_PLOT_LABEL}=${SFT_PREDICTIONS}"
-  --prediction "${GRPO_PLOT_LABEL}=${GRPO_PREDICTIONS}"
+PLOT_ARGS+=(
   --output-dir "$PLOT_DIR"
   --dpi "$PLOT_DPI"
 )

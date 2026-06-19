@@ -129,6 +129,7 @@ Draft-and-Prune, run the lightweight direct evaluator:
 ```bash
 PYTHONPATH=src python src/evaluate_plotted_metrics.py \
   --dataset DATA/FOLIO/folio_test.jsonl \
+  --model base=Qwen/Qwen3.5-9B \
   --model sft=outputs/sft_qwen3.5-9b/checkpoint-1000 \
   --model grpo_final=outputs/grpo_qwen3.5-9b/final_20260531_1521_grpo/checkpoint-2000 \
   --output-dir outputs/evaluations/plotted_metrics
@@ -140,6 +141,7 @@ search-shape metrics. To plot those outputs, use:
 
 ```bash
 PYTHONPATH=src python src/plot_evaluation_metrics.py \
+  --prediction "Qwen3.5-9B base=outputs/evaluations/plotted_metrics/base_predictions.jsonl" \
   --prediction "SFT step 1000=outputs/evaluations/plotted_metrics/sft_predictions.jsonl" \
   --prediction "GRPO final=outputs/evaluations/plotted_metrics/grpo_final_predictions.jsonl" \
   --output-dir outputs/evaluations/comparison_plots
@@ -164,11 +166,13 @@ SLURM/submit_and_tail.sh \
 These jobs write metrics, predictions, plots, and a runtime log under
 `outputs/final_eval_runs/<run-name>/`. `EVAL_VENV` should point to a Python
 3.12 evaluation environment; if it is omitted, the job tries `.venv_eval`,
-`eval_venv`, then `.venv`. Override paths or labels from `sbatch` when needed,
-for example:
+`eval_venv`, then `.venv`. The plotted-metrics jobs include the base
+`Qwen/Qwen3.5-9B` model by default; set `INCLUDE_BASE_MODEL=0` to evaluate only
+SFT and GRPO, or set `BASE_MODEL_PATH` to a local cached/exported base model.
+Override paths or labels from `sbatch` when needed, for example:
 
 ```bash
-sbatch --export=ALL,RUN_NAME=final_eval_qwen35,EVAL_VENV=/path/to/eval/env,SFT_MODEL_PATH=outputs/sft_qwen3.5-9b/checkpoint-1000 \
+sbatch --export=ALL,RUN_NAME=final_eval_qwen35,EVAL_VENV=/path/to/eval/env,BASE_MODEL_PATH=Qwen/Qwen3.5-9B,SFT_MODEL_PATH=outputs/sft_qwen3.5-9b/checkpoint-1000 \
   SLURM/EVAL/evaluate_plotted_metrics_qwen3.5-9b.job
 ```
 
