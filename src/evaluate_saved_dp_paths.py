@@ -179,6 +179,7 @@ def summarize_offline_model(
         max_input_tokens=None,
         temperature=0.0,
         top_p=1.0,
+        repetition_penalty=1.0,
     )
     metrics = summarize_results(
         spec,

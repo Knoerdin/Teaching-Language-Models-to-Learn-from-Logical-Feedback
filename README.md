@@ -132,12 +132,19 @@ PYTHONPATH=src python src/evaluate_plotted_metrics.py \
   --model base=Qwen/Qwen3.5-9B \
   --model sft=outputs/sft_qwen3.5-9b/checkpoint-1000 \
   --model grpo_final=outputs/grpo_qwen3.5-9b/final_20260531_1521_grpo/checkpoint-2000 \
+  --max-new-tokens 192 \
+  --repetition-penalty 1.1 \
   --output-dir outputs/evaluations/plotted_metrics
 ```
 
 This evaluator does one direct generation per example and always runs the prover
 for label accuracy/F1. It does not sample D&P paths, run repairs, or report D&P
-search-shape metrics. To plot those outputs, use:
+search-shape metrics. In these plotted metrics, `parse_rate` is the solver/FOL
+parser parse rate, not the text-section extraction rate. The old extraction-only
+number is still written as `format_extraction_rate` in the metrics JSON. The
+evaluator also writes readable per-example generations under
+`OUTPUT_DIR/model_outputs/`, including the raw model output, extracted FOL, gold
+FOL, prover status, and label decision. To plot those outputs, use:
 
 ```bash
 PYTHONPATH=src python src/plot_evaluation_metrics.py \
@@ -148,8 +155,8 @@ PYTHONPATH=src python src/plot_evaluation_metrics.py \
 ```
 
 Each model gets its own plot. The plot intentionally omits D&P search-shape
-metrics and shows only label accuracy, parse rate, gold-FOL exact accuracy, and
-label F1 scores.
+metrics and shows only label accuracy, solver/FOL parser parse rate, gold-FOL
+exact accuracy, and label F1 scores.
 
 On Snellius, run the same direct final evaluation through SLURM:
 
@@ -169,19 +176,17 @@ These jobs write metrics, predictions, plots, and a runtime log under
 `eval_venv`, then `.venv`. The plotted-metrics jobs include the base
 `Qwen/Qwen3.5-9B` model by default; set `INCLUDE_BASE_MODEL=0` to evaluate only
 SFT and GRPO, or set `BASE_MODEL_PATH` to a local cached/exported base model.
+The full plotted-metrics job defaults to `MAX_NEW_TOKENS=192` and
+`REPETITION_PENALTY=1.1`, matching the Qwen3.5 GRPO generation settings more
+closely than the older 256-token greedy run. Set `WRITE_MODEL_OUTPUTS=0` to skip
+the readable output files, or `MODEL_OUTPUT_EXAMPLES=N` to write only the first
+`N` examples per model.
 Override paths or labels from `sbatch` when needed, for example:
 
 ```bash
 sbatch --export=ALL,RUN_NAME=final_eval_qwen35,EVAL_VENV=/path/to/eval/env,BASE_MODEL_PATH=Qwen/Qwen3.5-9B,SFT_MODEL_PATH=outputs/sft_qwen3.5-9b/checkpoint-1000 \
   SLURM/EVAL/evaluate_plotted_metrics_qwen3.5-9b.job
 ```
-
-When `--output-dir` is set, the evaluator also writes Markdown reports under
-`OUTPUT_DIR/eval_reports/`, separated into `grpo/` and `sft/` subfolders when
-the model name or path indicates the trainer type. Each model report includes
-metric tables plus examples of fully correct and wrong autoformalizations. Use
-`--report-dir` to choose a different report location and `--report-examples` to
-change how many examples are shown per section.
 
 On SLURM, submit and automatically tail the matching comparison job:
 

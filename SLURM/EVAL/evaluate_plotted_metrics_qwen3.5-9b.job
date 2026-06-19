@@ -210,15 +210,18 @@ GRPO_PLOT_LABEL="${GRPO_PLOT_LABEL:-GRPO final}"
 DATASET="${DATASET:-DATA/FOLIO/folio_test.jsonl}"
 LIMIT="${LIMIT:-}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
-MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-256}"
+MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-192}"
 MAX_INPUT_TOKENS="${MAX_INPUT_TOKENS:-}"
 DEVICE="${DEVICE:-auto}"
 TORCH_DTYPE="${TORCH_DTYPE:-auto}"
 TEMPERATURE="${TEMPERATURE:-0.0}"
 TOP_P="${TOP_P:-1.0}"
+REPETITION_PENALTY="${REPETITION_PENALTY:-1.1}"
 INCLUDE_GOLD_SCHEMA="${INCLUDE_GOLD_SCHEMA:-0}"
 POSTPROCESS="${POSTPROCESS:-0}"
 INCLUDE_PROMPT="${INCLUDE_PROMPT:-0}"
+WRITE_MODEL_OUTPUTS="${WRITE_MODEL_OUTPUTS:-1}"
+MODEL_OUTPUT_EXAMPLES="${MODEL_OUTPUT_EXAMPLES:-0}"
 LOG_EVERY="${LOG_EVERY:-25}"
 PLOT_DPI="${PLOT_DPI:-300}"
 
@@ -309,6 +312,7 @@ EVAL_ARGS=(
   --torch-dtype "$TORCH_DTYPE"
   --temperature "$TEMPERATURE"
   --top-p "$TOP_P"
+  --repetition-penalty "$REPETITION_PENALTY"
   --output-dir "$EVAL_DIR"
   --log-every "$LOG_EVERY"
 )
@@ -327,6 +331,14 @@ if [ "$POSTPROCESS" = "1" ]; then
 fi
 if [ "$INCLUDE_PROMPT" = "1" ]; then
   EVAL_ARGS+=(--include-prompt)
+fi
+if [ "$WRITE_MODEL_OUTPUTS" = "1" ]; then
+  EVAL_ARGS+=(--write-model-outputs)
+else
+  EVAL_ARGS+=(--no-write-model-outputs)
+fi
+if [ -n "$MODEL_OUTPUT_EXAMPLES" ]; then
+  EVAL_ARGS+=(--model-output-examples "$MODEL_OUTPUT_EXAMPLES")
 fi
 
 echo "[$(date)] Launching direct plotted-metrics evaluation"

@@ -13,11 +13,12 @@ from matplotlib.patches import Patch
 
 from evaluate_autoformalization import label_classification_metrics
 from evaluate_autoformalization import sanitize_filename
+from evaluate_autoformalization import solver_parser_parse_rate
 
 
 PLOT_METRICS: tuple[tuple[str, str, str], ...] = (
     ("Label\nacc.", "label_accuracy", "score"),
-    ("Parse\nrate", "parse_rate", "score"),
+    ("Parser\nparse", "parse_rate", "score"),
     ("Gold FOL\nacc.", "gold_fol_accuracy", "score"),
     ("Macro\nF1", "label_macro_f1", "label_f1"),
     ("True\nF1", "label_true_f1", "label_f1"),
@@ -35,7 +36,6 @@ BAR_STYLES = {
         "color": "#19a34a",
     },
 }
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -103,7 +103,9 @@ def compute_plot_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
     metrics = label_classification_metrics(rows)
     metrics.update(
         {
-            "parse_rate": rate(rows, "parsed"),
+            "parse_rate": solver_parser_parse_rate(rows),
+            "solver_parse_rate": solver_parser_parse_rate(rows),
+            "format_extraction_rate": rate(rows, "parsed"),
             "gold_fol_accuracy": rate(rows, "joint_unordered_exact"),
         }
     )

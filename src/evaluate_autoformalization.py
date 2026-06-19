@@ -56,6 +56,11 @@ UNEXECUTABLE_PROVER_STATUSES = {
     "invalid_label",
     "all_paths_pruned",
 }
+PARSER_PARSE_FAILURE_STATUSES = {
+    "not_parsed",
+    "parse_error",
+    "exception",
+}
 ALL_REPAIR_STATUSES = "all"
 NO_REPAIR_STATUSES = "none"
 
@@ -74,6 +79,7 @@ class GenerationConfig:
     max_input_tokens: int | None
     temperature: float
     top_p: float
+    repetition_penalty: float = 1.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -141,6 +147,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--top-p", type=float, default=1.0)
+    parser.add_argument(
+        "--repetition-penalty",
+        type=float,
+        default=1.0,
+        help=(
+            "Generation repetition penalty. Use the GRPO training value, e.g. "
+            "1.1, when comparing against GRPO checkpoints."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--trust-remote-code",
@@ -518,6 +533,39 @@ def load_model(
     return model
 
 
+def loaded_model_metadata(model_path: str, model: Any) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "model_load_type": (
+            "peft_adapter" if is_peft_adapter(model_path) else "full_or_hub_model"
+        ),
+        "model_class": type(model).__name__,
+        "is_peft_model": hasattr(model, "peft_config"),
+    }
+
+    peft_config = getattr(model, "peft_config", None)
+    if isinstance(peft_config, dict) and peft_config:
+        metadata["peft_adapter_names"] = sorted(str(name) for name in peft_config)
+        active_adapter = getattr(model, "active_adapter", None)
+        if active_adapter is not None:
+            metadata["peft_active_adapter"] = str(active_adapter)
+        first_config = next(iter(peft_config.values()))
+        metadata["peft_base_model_name_or_path"] = getattr(
+            first_config,
+            "base_model_name_or_path",
+            None,
+        )
+        metadata["peft_r"] = getattr(first_config, "r", None)
+        metadata["peft_lora_alpha"] = getattr(first_config, "lora_alpha", None)
+
+    device_map = getattr(model, "hf_device_map", None)
+    if device_map is None and hasattr(model, "base_model"):
+        device_map = getattr(model.base_model, "hf_device_map", None)
+    if device_map:
+        metadata["hf_device_map"] = {str(k): str(v) for k, v in device_map.items()}
+
+    return metadata
+
+
 def generate_batch(
     model: Any,
     tokenizer: Any,
@@ -548,6 +596,8 @@ def generate_batch(
     if config.temperature > 0.0:
         generation_kwargs["temperature"] = config.temperature
         generation_kwargs["top_p"] = config.top_p
+    if config.repetition_penalty != 1.0:
+        generation_kwargs["repetition_penalty"] = config.repetition_penalty
 
     with torch.inference_mode():
         generated = model.generate(**tokenized, **generation_kwargs)
@@ -731,6 +781,19 @@ def normalize_optional_dataset_label(value: Any) -> str | None:
     if label in DP_LABELS:
         return label
     return None
+
+
+def solver_parser_parsed(result: dict[str, Any]) -> bool:
+    status = str(result.get("prover_status") or "").strip().lower()
+    return bool(status) and status not in PARSER_PARSE_FAILURE_STATUSES
+
+
+def solver_parser_parse_rate(results: list[dict[str, Any]]) -> float:
+    return (
+        sum(1 for result in results if solver_parser_parsed(result)) / len(results)
+        if results
+        else 0.0
+    )
 
 
 def label_prediction_from_result(result: dict[str, Any]) -> str | None:
@@ -1164,6 +1227,14 @@ def summarize_results(
     def rate(key: str) -> float:
         return sum(1 for result in results if result[key]) / total
 
+    has_prover_statuses = any("prover_status" in result for result in results)
+    format_extraction_rate = rate("parsed")
+    parser_parse_rate = (
+        solver_parser_parse_rate(results)
+        if has_prover_statuses
+        else format_extraction_rate
+    )
+
     metrics: dict[str, Any] = {
         "model_name": spec.name,
         "model_path": spec.path,
@@ -1175,11 +1246,14 @@ def summarize_results(
         "max_input_tokens": generation_config.max_input_tokens,
         "temperature": generation_config.temperature,
         "top_p": generation_config.top_p,
+        "repetition_penalty": generation_config.repetition_penalty,
         "include_gold_schema": any(
             result.get("include_gold_schema", False) for result in results
         ),
         "postprocess": any(result.get("postprocessed", False) for result in results),
-        "parse_rate": rate("parsed"),
+        "parse_rate": parser_parse_rate,
+        "solver_parse_rate": parser_parse_rate if has_prover_statuses else None,
+        "format_extraction_rate": format_extraction_rate,
         "autoformalization_accuracy": rate("joint_ordered_exact"),
         "autoformalization_accuracy_ignore_premise_order": rate(
             "joint_unordered_exact"
@@ -1333,6 +1407,7 @@ def evaluate_model(
             max_input_tokens=generation_config.max_input_tokens,
             temperature=args.draft_temperature,
             top_p=generation_config.top_p,
+            repetition_penalty=generation_config.repetition_penalty,
         )
         for index, record in enumerate(records, start=1):
             record_started_at = time.monotonic()
@@ -1567,8 +1642,13 @@ def build_model_report_markdown(
             "",
             "| Outcome | Count |",
             "| --- | ---: |",
-            f"| Parsed | {count_true(predictions, 'parsed')} |",
-            f"| Parse failures | {count_false(predictions, 'parsed')} |",
+            f"| Solver/FOL parser parsed | {count_solver_parser_parsed(predictions)} |",
+            (
+                "| Solver/FOL parser parse failures | "
+                f"{len(predictions) - count_solver_parser_parsed(predictions)} |"
+            ),
+            f"| Format extracted | {count_true(predictions, 'parsed')} |",
+            f"| Format extraction failures | {count_false(predictions, 'parsed')} |",
             (
                 "| Full match, ordered premises | "
                 f"{count_true(predictions, 'joint_ordered_exact')} |"
@@ -1635,7 +1715,8 @@ def report_metric_rows(
     metrics: dict[str, Any],
 ) -> list[tuple[str, str, str | None]]:
     rows = [
-        ("Parse rate", "parse_rate", "parsed"),
+        ("Parser parse rate", "parse_rate", None),
+        ("Format extraction rate", "format_extraction_rate", "parsed"),
         (
             "Autoformalization accuracy",
             "autoformalization_accuracy",
@@ -2003,10 +2084,19 @@ def count_false(results: list[dict[str, Any]], key: str) -> int:
     return sum(1 for result in results if not result[key])
 
 
+def count_solver_parser_parsed(results: list[dict[str, Any]]) -> int:
+    return sum(1 for result in results if solver_parser_parsed(result))
+
+
 def print_metrics(metrics: dict[str, Any]) -> None:
     print(f"\n{metrics['model_name']}")
     print(f"  examples: {metrics['n_examples']}")
     print(f"  parse_rate: {metrics['parse_rate']:.4f}")
+    if "format_extraction_rate" in metrics:
+        print(
+            "  format_extraction_rate: "
+            f"{metrics['format_extraction_rate']:.4f}"
+        )
     print(
         "  autoformalization_accuracy: "
         f"{metrics['autoformalization_accuracy']:.4f}"
@@ -2072,6 +2162,7 @@ def main() -> None:
         max_input_tokens=args.max_input_tokens,
         temperature=formalization_temperature,
         top_p=args.top_p,
+        repetition_penalty=args.repetition_penalty,
     )
 
     print(f"Loaded {len(records)} examples from {args.dataset}", flush=True)
